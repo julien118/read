@@ -9,21 +9,23 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = ''
 const FONT_SIZES = [14, 16, 18, 20, 22, 24]
 const THEME_ICONS = { white: '☀️', dark: '🌙', night: '🔴' }
 
-function cleanPDFText(str) {
-  return str
-    .replace(/ﬀ/g, 'ff')
-    .replace(/ﬁ/g, 'fi')
-    .replace(/ﬂ/g, 'fl')
-    .replace(/ﬃ/g, 'ffi')
-    .replace(/ﬄ/g, 'ffl')
-    .replace(/ﬅ/g, 'st')
-    .replace(/ﬆ/g, 'st')
-    .replace(/[-]/g, '')
-    .replace(/�/g, '')
-    .replace(/-/g, '')
-    .replace(/□/g, '')
-    .replace(/  +/g, ' ')
-    .trim()
+function fixPDFChars(str) {
+  if (!str) return ''
+  let result = ''
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i)
+    if (code >= 0xE000 && code <= 0xF8FF) continue  // Private Use Area
+    if (code === 0xFB00) { result += 'ff'; continue }
+    if (code === 0xFB01) { result += 'fi'; continue }
+    if (code === 0xFB02) { result += 'fl'; continue }
+    if (code === 0xFB03) { result += 'ffi'; continue }
+    if (code === 0xFB04) { result += 'ffl'; continue }
+    if (code === 0xFB05 || code === 0xFB06) { result += 'st'; continue }
+    if (code === 0xFFFD || code === 0x0000) continue  // replacement char / null
+    if (code === 0x25A1 || code === 0x25A0) continue  // □ ■
+    result += str[i]
+  }
+  return result
 }
 
 function textItemsToParagraphs(items) {
@@ -59,13 +61,15 @@ function textItemsToParagraphs(items) {
   const paragraphs = []
   let pending = []
   for (let i = 0; i < lineGroups.length; i++) {
-    const raw = lineGroups[i].items.map(it => cleanPDFText(it.str)).join('').replace(/\s+/g, ' ').trim()
+    const raw = lineGroups[i].items.map(it => fixPDFChars(it.str)).join('').replace(/\s+/g, ' ').trim()
     if (!raw) continue
     pending.push(raw)
     const isLast = i === lineGroups.length - 1
     const nextGap = isLast ? Infinity : lineGroups[i].y - lineGroups[i + 1].y
     if (isLast || nextGap > PARA_GAP) {
-      const para = pending.join(' ').replace(/\s+/g, ' ').trim()
+      let para = pending.join(' ').replace(/\s+/g, ' ').trim()
+      // Fix orphaned capital letters left by removed ligature prefix (e.g. "T" from "Th")
+      para = para.replace(/\b([A-Z])\s+([a-z])/g, '$1$2')
       if (para) paragraphs.push(para)
       pending = []
     }
