@@ -55,7 +55,7 @@ export async function addBook(id, metadata, pdfBuffer) {
   if (insertError) throw insertError
 }
 
-export async function getPDF(bookId) {
+export async function getPDF(bookId, onProgress = null) {
   const { data: book, error: bookError } = await supabase
     .from('books')
     .select('storage_path')
@@ -63,12 +63,31 @@ export async function getPDF(bookId) {
     .single()
   if (bookError) throw bookError
 
-  const { data: blob, error: downloadError } = await supabase.storage
-    .from('books')
-    .download(book.storage_path)
-  if (downloadError) throw downloadError
+  const { data: urlData } = supabase.storage.from('books').getPublicUrl(book.storage_path)
+  const response = await fetch(urlData.publicUrl)
+  if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`)
 
-  return blob.arrayBuffer()
+  const contentLength = +response.headers.get('content-length')
+  if (!onProgress || !response.body || !contentLength) {
+    return response.arrayBuffer()
+  }
+
+  // Stream with progress
+  const reader = response.body.getReader()
+  const chunks = []
+  let received = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    received += value.length
+    onProgress(Math.round((received / contentLength) * 100))
+  }
+  const total = chunks.reduce((s, c) => s + c.length, 0)
+  const buf = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) { buf.set(chunk, offset); offset += chunk.length }
+  return buf.buffer
 }
 
 export async function deleteBook(bookId) {

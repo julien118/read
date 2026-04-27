@@ -67,9 +67,11 @@ function textItemsToParagraphs(items) {
 export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   const [status, setStatus]           = useState('loading') // loading|extracting|ready|error
   const [errorMsg, setErrorMsg]       = useState('')
-  const [extractProgress, setExtractProgress] = useState(0)
+  const [downloadProgress, setDownloadProgress] = useState(0)
+  const [extractProgress, setExtractProgress]   = useState(0)
   const [content, setContent]         = useState([]) // { type:'text', data:string[] } | { type:'image', data:string }
   const [bookTitle, setBookTitle]     = useState('')
+  const [bookCover, setBookCover]     = useState(null)
   const [scrollPct, setScrollPct]     = useState(0)
   const [showHeader, setShowHeader]   = useState(true)
   const [fontSize, setFontSize]       = useState(() => {
@@ -102,17 +104,19 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
       try {
         const { data: book } = await supabase
           .from('books')
-          .select('title, current_page, total_pages')
+          .select('title, current_page, total_pages, cover_image')
           .eq('id', bookId)
           .single()
         if (cancelled) return
-        if (book?.title) setBookTitle(book.title)
+        if (book?.title)       setBookTitle(book.title)
+        if (book?.cover_image) setBookCover(book.cover_image)
         const savedPage  = book?.current_page ?? 1
         const totalPages = book?.total_pages  ?? 1
         savedScrollRef.current = totalPages > 1 ? ((savedPage - 1) / (totalPages - 1)) * 100 : 0
 
-        setStatus('loading')
-        const buffer = await getPDF(bookId)
+        const buffer = await getPDF(bookId, pct => {
+          if (!cancelled) setDownloadProgress(pct)
+        })
         if (cancelled) return
 
         const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise
@@ -314,29 +318,22 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
 
   // ── Loading / extracting screens ─────────────────────────────────────
   if (status === 'loading' || status === 'extracting') {
-    const circumference = 2 * Math.PI * 18
+    // Download fills 0→50%, extraction fills 50→100%
+    const combinedPct = status === 'loading'
+      ? Math.round(downloadProgress / 2)
+      : 50 + Math.round(extractProgress / 2)
+    const label = status === 'loading' ? 'Chargement en cours…' : 'Extraction du texte…'
     return (
       <div className="kindle-reader">
         <div className="kindle-loading">
-          {status === 'loading' && <span className="spinner large" />}
-          {status === 'extracting' && (
-            <>
-              <div className="kindle-ring-wrap">
-                <svg width="52" height="52" viewBox="0 0 44 44">
-                  <circle cx="22" cy="22" r="18" fill="none" stroke="var(--border)" strokeWidth="3" />
-                  <circle
-                    cx="22" cy="22" r="18" fill="none"
-                    stroke="var(--text-sub)" strokeWidth="3"
-                    strokeDasharray={`${circumference * extractProgress / 100} ${circumference}`}
-                    strokeLinecap="round"
-                    transform="rotate(-90 22 22)"
-                  />
-                </svg>
-                <span className="kindle-ring-pct">{extractProgress}%</span>
-              </div>
-              <p className="kindle-loading-label">Extraction du texte…</p>
-            </>
-          )}
+          {bookCover
+            ? <img className="kindle-loading-cover" src={bookCover} alt="" />
+            : <div className="kindle-loading-cover-placeholder" />}
+          {bookTitle && <p className="kindle-loading-title">{bookTitle}</p>}
+          <div className="kindle-loading-bar-wrap">
+            <div className="kindle-loading-bar-fill" style={{ width: `${combinedPct || 3}%` }} />
+          </div>
+          <p className="kindle-loading-label">{label}</p>
         </div>
       </div>
     )
