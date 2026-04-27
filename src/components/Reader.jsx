@@ -14,7 +14,8 @@ function fixPDFChars(str) {
   let result = ''
   for (let i = 0; i < str.length; i++) {
     const code = str.charCodeAt(i)
-    if (code >= 0xE000 && code <= 0xF8FF) continue  // Private Use Area
+    // Private Use Area → placeholder □ for context-aware reconstruction
+    if (code >= 0xE000 && code <= 0xF8FF) { result += '□'; continue }
     if (code === 0xFB00) { result += 'ff'; continue }
     if (code === 0xFB01) { result += 'fi'; continue }
     if (code === 0xFB02) { result += 'fl'; continue }
@@ -22,10 +23,63 @@ function fixPDFChars(str) {
     if (code === 0xFB04) { result += 'ffl'; continue }
     if (code === 0xFB05 || code === 0xFB06) { result += 'st'; continue }
     if (code === 0xFFFD || code === 0x0000) continue  // replacement char / null
-    if (code === 0x25A1 || code === 0x25A0) continue  // □ ■
+    // □ (U+25A1) and ■ (U+25A0) from PDF pass through as □ for reconstruction
+    if (code === 0x25A0) { result += '□'; continue }
     result += str[i]
   }
   return result
+}
+
+function reconstructWords(text) {
+  return text
+    // "a□er" → "after", "□er" → "fter"
+    .replace(/a□er/g, 'after')
+    .replace(/□er/g, 'fter')
+    // "le□" → "left", etc.
+    .replace(/le□/g, 'left')
+    .replace(/so□/g, 'soft')
+    .replace(/gi□/g, 'gift')
+    .replace(/shi□/g, 'shift')
+    .replace(/li□/g, 'lift')
+    .replace(/dri□/g, 'drift')
+    .replace(/sel□/g, 'self')
+    .replace(/ful□/g, 'fulfil')
+    .replace(/hal□/g, 'half')
+    .replace(/hel□/g, 'help')
+    // Uppercase "Th-" patterns
+    .replace(/□is/g, 'This')
+    .replace(/□ey/g, 'They')
+    .replace(/□e /g, 'The ')
+    .replace(/□e\./g, 'The.')
+    .replace(/□e,/g, 'The,')
+    .replace(/□us/g, 'Thus')
+    .replace(/□at/g, 'That')
+    .replace(/□en/g, 'Then')
+    .replace(/□ere/g, 'There')
+    .replace(/□rough/g, 'Through')
+    .replace(/□ink/g, 'Think')
+    .replace(/□ings/g, 'Things')
+    .replace(/□ing/g, 'Thing')
+    .replace(/□ose/g, 'Those')
+    .replace(/□ough/g, 'Though')
+    .replace(/□ought/g, 'Thought')
+    // Lowercase versions
+    .replace(/□is /g, 'this ')
+    .replace(/□ey /g, 'they ')
+    .replace(/□e /g, 'the ')
+    .replace(/□us /g, 'thus ')
+    .replace(/□at /g, 'that ')
+    .replace(/□en /g, 'then ')
+    .replace(/□ere /g, 'there ')
+    .replace(/□rough/g, 'through')
+    .replace(/□ink/g, 'think')
+    .replace(/□ings/g, 'things')
+    .replace(/□ing/g, 'thing')
+    .replace(/□ose/g, 'those')
+    .replace(/□ough/g, 'though')
+    .replace(/□ought/g, 'thought')
+    // Strip any remaining □
+    .replace(/□/g, '')
 }
 
 function textItemsToParagraphs(items) {
@@ -68,7 +122,7 @@ function textItemsToParagraphs(items) {
     const nextGap = isLast ? Infinity : lineGroups[i].y - lineGroups[i + 1].y
     if (isLast || nextGap > PARA_GAP) {
       let para = pending.join(' ').replace(/\s+/g, ' ').trim()
-      // Fix orphaned capital letters left by removed ligature prefix (e.g. "T" from "Th")
+      para = reconstructWords(para)
       para = para.replace(/\b([A-Z])\s+([a-z])/g, '$1$2')
       if (para) paragraphs.push(para)
       pending = []
