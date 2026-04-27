@@ -14,8 +14,8 @@ function fixPDFChars(str) {
   let result = ''
   for (let i = 0; i < str.length; i++) {
     const code = str.charCodeAt(i)
-    // Private Use Area → placeholder □ for context-aware reconstruction
-    if (code >= 0xE000 && code <= 0xF8FF) { result += '□'; continue }
+    // Private Use Area → space to preserve word boundaries
+    if (code >= 0xE000 && code <= 0xF8FF) { result += ' '; continue }
     if (code === 0xFB00) { result += 'ff'; continue }
     if (code === 0xFB01) { result += 'fi'; continue }
     if (code === 0xFB02) { result += 'fl'; continue }
@@ -23,8 +23,7 @@ function fixPDFChars(str) {
     if (code === 0xFB04) { result += 'ffl'; continue }
     if (code === 0xFB05 || code === 0xFB06) { result += 'st'; continue }
     if (code === 0xFFFD || code === 0x0000) continue  // replacement char / null
-    // □ (U+25A1) and ■ (U+25A0) from PDF pass through as □ for reconstruction
-    if (code === 0x25A0) { result += '□'; continue }
+    if (code === 0x25A0 || code === 0x25A1) { result += ' '; continue }  // □ ■ → space
     result += str[i]
   }
   return result
@@ -124,6 +123,7 @@ function textItemsToParagraphs(items) {
       let para = pending.join(' ').replace(/\s+/g, ' ').trim()
       para = reconstructWords(para)
       para = para.replace(/\b([A-Z])\s+([a-z])/g, '$1$2')
+      para = para.replace(/  +/g, ' ').trim()
       if (para) paragraphs.push(para)
       pending = []
     }
@@ -465,11 +465,6 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   return (
     <div className="kindle-reader">
       <div className={`kindle-header${showHeader ? ' visible' : ''}`}>
-        <button className="kindle-nav-btn" onClick={handleBack} aria-label="Retour">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-        </button>
         <span className="kindle-book-title">
           {bookTitle}{scrollPct > 0 ? ` • ${scrollPct}%` : ''}
         </span>
@@ -477,6 +472,12 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
           {THEME_ICONS[theme] ?? '☀️'}
         </button>
       </div>
+
+      <button className="reader-back-btn" onClick={handleBack} aria-label="Retour">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      </button>
 
       <div
         className="kindle-scroll"

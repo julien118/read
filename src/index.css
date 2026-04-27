@@ -513,6 +513,28 @@ html, body {
   border-radius: 4px;
 }
 
+/* Permanent floating back button */
+.reader-back-btn {
+  position: fixed;
+  bottom: 100px;
+  left: 20px;
+  z-index: 1000;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.reader-back-btn:active { opacity: 0.6; }
+.reader-back-btn svg { width: 20px; height: 20px; }
+
 /* Font size pill — bottom center, always visible */
 .kindle-font-bar {
   position: fixed;
