@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
-import { getPDF, saveProgress, updateBookPageCount } from '../db'
+import { useState, useEffect, useRef } from 'react'
+import { getPDF, updateBookPageCount } from '../db'
 import { supabase } from '../lib/supabase'
 import WordPopup from './WordPopup'
 import TranslatePopup from './TranslatePopup'
@@ -8,20 +8,6 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = ''
 
 const FONT_SIZES = [14, 16, 18, 20, 22, 24]
 const THEME_ICONS = { white: '☀️', dark: '🌙', night: '🔴' }
-
-function debounce(fn, ms) {
-  let timer = null
-  let lastArgs = null
-  function debounced(...args) {
-    lastArgs = args
-    clearTimeout(timer)
-    timer = setTimeout(() => { timer = null; fn(...args) }, ms)
-  }
-  debounced.flush = () => {
-    if (timer !== null) { clearTimeout(timer); timer = null; fn(...lastArgs) }
-  }
-  return debounced
-}
 
 function cleanPDFText(str) {
   return str
@@ -34,7 +20,7 @@ function cleanPDFText(str) {
     .replace(/ﬆ/g, 'st')
     .replace(/[-]/g, '')
     .replace(/�/g, '')
-    .replace(/-/g, '')
+    .replace(/-/g, '')
     .replace(/□/g, '')
     .replace(/  +/g, ' ')
     .trim()
@@ -105,7 +91,6 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   const [translatePopup, setTranslatePopup] = useState(null)
   const [selectionInfo, setSelectionInfo]   = useState(null)
 
-  const scrollRef        = useRef()
   const contentRef       = useRef()
   const numPagesRef      = useRef(0)
   const headerTimerRef   = useRef(null)
@@ -119,32 +104,35 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   useEffect(() => { popupOpenRef.current = !!(popup || translatePopup) }, [popup, translatePopup])
   useEffect(() => { selInfoRef.current = selectionInfo }, [selectionInfo])
 
-  // ── Debounced position save ─────────────────────────────────────────
-  const savePosition = useMemo(() =>
-    debounce(async (percent) => {
-      await supabase
-        .from('books')
-        .update({
-          scroll_percent: percent,
-          last_read: new Date().toISOString(),
-        })
-        .eq('id', bookId)
-    }, 2000)
-  , [bookId])
-
-  // Flush on unmount so the last position is always saved
-  useEffect(() => () => { savePosition.flush() }, [savePosition])
+  // ── Unlock window scroll while reader is open ───────────────────────
+  useEffect(() => {
+    document.documentElement.style.overflow = 'auto'
+    document.body.style.overflow = 'auto'
+    const root = document.getElementById('root')
+    if (root) root.style.overflow = 'auto'
+    window.scrollTo({ top: 0, behavior: 'instant' })
+    return () => {
+      document.documentElement.style.overflow = ''
+      document.body.style.overflow = ''
+      if (root) root.style.overflow = ''
+      window.scrollTo({ top: 0, behavior: 'instant' })
+    }
+  }, [])
 
   // ── Load PDF then extract all text ──────────────────────────────────
   useEffect(() => {
     let cancelled = false
     async function load() {
       try {
-        const { data: book } = await supabase
+        const { data: book, error: bookError } = await supabase
           .from('books')
-          .select('*, scroll_percent, last_read')
+          .select('id, title, storage_path, cover_image, scroll_percent, total_pages')
           .eq('id', bookId)
           .single()
+
+        // Step 1 debug — verify column exists and value
+        console.log('[Reader] saved position from DB:', book?.scroll_percent, 'error:', bookError)
+
         if (cancelled) return
         if (book?.title)       setBookTitle(book.title)
         if (book?.cover_image) setBookCover(book.cover_image)
@@ -213,36 +201,48 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     return () => { cancelled = true }
   }, [bookId])
 
-  // ── Restore scroll position after content renders ───────────────────
+  // ── Restore scroll after content renders ────────────────────────────
+  useEffect(() => {
+    if (!content.length || savedScrollRef.current <= 0) return
+    setTimeout(() => {
+      const total = document.documentElement.scrollHeight - window.innerHeight
+      const target = (savedScrollRef.current / 100) * total
+      console.log('[Reader] restoring to', savedScrollRef.current + '%', '→ px', target, 'total', total)
+      window.scrollTo({ top: target, behavior: 'instant' })
+    }, 500)
+  }, [content])
+
+  // ── Auto-hide header after ready ─────────────────────────────────────
   useEffect(() => {
     if (status !== 'ready') return
-    const pct = savedScrollRef.current
-    if (pct > 0) {
-      requestAnimationFrame(() => {
-        setTimeout(() => {
-          const el = scrollRef.current
-          if (!el) return
-          const target = (pct / 100) * (el.scrollHeight - el.clientHeight)
-          el.scrollTop = target
-        }, 300)
-      })
-    }
     headerTimerRef.current = setTimeout(() => setShowHeader(false), 3000)
     return () => clearTimeout(headerTimerRef.current)
   }, [status])
 
-  // ── Scroll handler ──────────────────────────────────────────────────
-  function handleScroll() {
-    const el = scrollRef.current
-    if (!el) return
-    const pct = el.scrollHeight - el.clientHeight > 0
-      ? (el.scrollTop / (el.scrollHeight - el.clientHeight)) * 100 : 0
-    setScrollPct(pct)
-    savePosition(Math.round(pct))
+  // ── Scroll listener — save on every scroll event ────────────────────
+  useEffect(() => {
+    if (status !== 'ready') return
+    const handleScroll = () => {
+      const total = document.documentElement.scrollHeight - window.innerHeight
+      if (total <= 0) return
+      const percent = Math.round((window.scrollY / total) * 100)
+      setScrollPct(percent)
 
-    clearTimeout(headerTimerRef.current)
-    headerTimerRef.current = setTimeout(() => setShowHeader(false), 3000)
-  }
+      supabase
+        .from('books')
+        .update({ scroll_percent: percent })
+        .eq('id', bookId)
+        .then(({ error }) => {
+          if (error) console.error('[Reader] SAVE ERROR:', error)
+          else console.log('[Reader] saved position:', percent + '%')
+        })
+
+      clearTimeout(headerTimerRef.current)
+      headerTimerRef.current = setTimeout(() => setShowHeader(false), 3000)
+    }
+    window.addEventListener('scroll', handleScroll, { passive: true })
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [bookId, status])
 
   // ── Font size ───────────────────────────────────────────────────────
   function changeFontSize(delta) {
@@ -395,16 +395,12 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   }
 
   async function handleBack() {
-    const el = scrollRef.current
-    if (el) {
-      const pct = el.scrollHeight - el.clientHeight > 0
-        ? (el.scrollTop / (el.scrollHeight - el.clientHeight)) * 100 : 0
-      savePosition.flush()
-      await supabase
-        .from('books')
-        .update({ scroll_percent: Math.round(pct), last_read: new Date().toISOString() })
-        .eq('id', bookId)
-    }
+    const total = document.documentElement.scrollHeight - window.innerHeight
+    const pct = total > 0 ? Math.round((window.scrollY / total) * 100) : 0
+    await supabase
+      .from('books')
+      .update({ scroll_percent: pct, last_read: new Date().toISOString() })
+      .eq('id', bookId)
     onClose()
   }
 
@@ -417,7 +413,7 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
           </svg>
         </button>
         <span className="kindle-book-title">
-          {bookTitle}{scrollPct > 0 ? ` • ${Math.round(scrollPct)}%` : ''}
+          {bookTitle}{scrollPct > 0 ? ` • ${scrollPct}%` : ''}
         </span>
         <button className="kindle-nav-btn" onClick={onToggleTheme} aria-label="Mode lecture">
           {THEME_ICONS[theme] ?? '☀️'}
@@ -425,9 +421,7 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
       </div>
 
       <div
-        ref={scrollRef}
         className="kindle-scroll"
-        onScroll={handleScroll}
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
