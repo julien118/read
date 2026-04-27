@@ -149,15 +149,16 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   const [translatePopup, setTranslatePopup] = useState(null)
   const [selectionInfo, setSelectionInfo]   = useState(null)
 
-  const contentRef       = useRef()
-  const numPagesRef      = useRef(0)
-  const headerTimerRef   = useRef(null)
-  const savedScrollRef   = useRef(0)
-  const popupOpenRef     = useRef(false)
-  const selInfoRef       = useRef(null)
-  const longPressRef     = useRef(null)
-  const touchStartRef    = useRef(null)
-  const movedRef         = useRef(false)
+  const contentRef         = useRef()
+  const numPagesRef        = useRef(0)
+  const headerTimerRef     = useRef(null)
+  const savedScrollRef     = useRef(0)
+  const savePositionNowRef = useRef(null)
+  const popupOpenRef       = useRef(false)
+  const selInfoRef         = useRef(null)
+  const longPressRef       = useRef(null)
+  const touchStartRef      = useRef(null)
+  const movedRef           = useRef(false)
 
   useEffect(() => { popupOpenRef.current = !!(popup || translatePopup) }, [popup, translatePopup])
   useEffect(() => { selInfoRef.current = selectionInfo }, [selectionInfo])
@@ -194,7 +195,9 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
         if (cancelled) return
         if (book?.title)       setBookTitle(book.title)
         if (book?.cover_image) setBookCover(book.cover_image)
-        savedScrollRef.current = book?.scroll_percent ?? 0
+        // Use Supabase value first, fall back to localStorage
+        savedScrollRef.current = book?.scroll_percent ||
+          parseInt(localStorage.getItem(`read_position_${bookId}`) || '0')
 
         const buffer = await getPDF(book, pct => {
           if (!cancelled) setDownloadProgress(pct)
@@ -277,29 +280,54 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     return () => clearTimeout(headerTimerRef.current)
   }, [status])
 
-  // ── Scroll listener — save on every scroll event ────────────────────
+  // ── All save triggers ────────────────────────────────────────────────
   useEffect(() => {
     if (status !== 'ready') return
-    const handleScroll = () => {
+
+    function savePositionNow() {
       const total = document.documentElement.scrollHeight - window.innerHeight
       if (total <= 0) return
       const percent = Math.round((window.scrollY / total) * 100)
-      setScrollPct(percent)
-
       supabase
         .from('books')
-        .update({ scroll_percent: percent })
+        .update({ scroll_percent: percent, last_read: new Date().toISOString() })
         .eq('id', bookId)
-        .then(({ error }) => {
-          if (error) console.error('[Reader] SAVE ERROR:', error)
-          else console.log('[Reader] saved position:', percent + '%')
-        })
+      localStorage.setItem(`read_position_${bookId}`, percent.toString())
+    }
 
+    savePositionNowRef.current = savePositionNow
+
+    // Debounced scroll — also updates progress bar and header timer
+    let scrollTimer = null
+    function debouncedSave() {
+      const total = document.documentElement.scrollHeight - window.innerHeight
+      if (total > 0) setScrollPct(Math.round((window.scrollY / total) * 100))
+      clearTimeout(scrollTimer)
+      scrollTimer = setTimeout(savePositionNow, 1500)
       clearTimeout(headerTimerRef.current)
       headerTimerRef.current = setTimeout(() => setShowHeader(false), 3000)
     }
-    window.addEventListener('scroll', handleScroll, { passive: true })
-    return () => window.removeEventListener('scroll', handleScroll)
+
+    function onVisibilityChange() {
+      if (document.hidden) savePositionNow()
+    }
+
+    const interval = setInterval(savePositionNow, 30000)
+
+    window.addEventListener('scroll', debouncedSave, { passive: true })
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('pagehide', savePositionNow)
+    window.addEventListener('beforeunload', savePositionNow)
+
+    return () => {
+      clearTimeout(scrollTimer)
+      clearInterval(interval)
+      savePositionNow()
+      window.removeEventListener('scroll', debouncedSave)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('pagehide', savePositionNow)
+      window.removeEventListener('beforeunload', savePositionNow)
+    }
   }, [bookId, status])
 
   // ── Font size ───────────────────────────────────────────────────────
@@ -452,13 +480,8 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     )
   }
 
-  async function handleBack() {
-    const total = document.documentElement.scrollHeight - window.innerHeight
-    const pct = total > 0 ? Math.round((window.scrollY / total) * 100) : 0
-    await supabase
-      .from('books')
-      .update({ scroll_percent: pct, last_read: new Date().toISOString() })
-      .eq('id', bookId)
+  function handleBack() {
+    savePositionNowRef.current?.()
     onClose()
   }
 
