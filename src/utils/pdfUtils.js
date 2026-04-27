@@ -1,14 +1,12 @@
-import * as pdfjsLib from 'pdfjs-dist'
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.mjs',
-  import.meta.url
-).href
-
 export async function generateCover(buffer) {
+  const pdfjsLib = window['pdfjs-dist/build/pdf']
   let pdf = null
   try {
-    pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise
+    pdf = await pdfjsLib.getDocument({
+      data: new Uint8Array(buffer),
+      isEvalSupported: false,
+      useSystemFonts: true,
+    }).promise
     const page = await pdf.getPage(1)
     const vp = page.getViewport({ scale: 1 })
     const scale = Math.min(300 / vp.width, 400 / vp.height)
