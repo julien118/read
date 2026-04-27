@@ -5,10 +5,8 @@ import WordPopup from './WordPopup'
 import TranslatePopup from './TranslatePopup'
 import * as pdfjsLib from 'pdfjs-dist'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.mjs',
-  import.meta.url
-).href
+pdfjsLib.GlobalWorkerOptions.workerSrc = ''
+pdfjsLib.GlobalWorkerOptions.workerPort = null
 
 const FONT_SIZES = [14, 16, 18, 20, 22, 24]
 const THEME_ICONS = { white: '☀️', dark: '🌙', night: '🔴' }
@@ -119,7 +117,12 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
         })
         if (cancelled) return
 
-        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise
+        const pdf = await pdfjsLib.getDocument({
+          data: new Uint8Array(buffer),
+          useWorkerFetch: false,
+          isEvalSupported: false,
+          useSystemFonts: true,
+        }).promise
         if (cancelled) { pdf.destroy(); return }
         numPagesRef.current = pdf.numPages
         updateBookPageCount(bookId, pdf.numPages)
