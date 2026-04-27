@@ -5,7 +5,7 @@ import Vocabulary from './components/Vocabulary'
 import { supabase } from './lib/supabase'
 
 const THEMES = ['white', 'dark', 'night']
-const THEME_META = { white: '#ffffff', dark: '#111111', night: '#1a0f00' }
+const THEME_META = { white: '#ffffff', dark: '#F8F1E3', night: '#1a0f00' }
 
 export default function App() {
   const [view, setView] = useState('library') // library | reader | vocabulary

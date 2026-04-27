@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
-import { getPDF, saveProgress, getProgress, updateBookPageCount } from '../db'
+import { getPDF, saveProgress, updateBookPageCount } from '../db'
+import { supabase } from '../lib/supabase'
 import WordPopup from './WordPopup'
 import TranslatePopup from './TranslatePopup'
 import * as pdfjsLib from 'pdfjs-dist'
@@ -9,383 +10,295 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url
 ).href
 
+const FONT_SIZES = [14, 16, 18, 20, 22, 24]
 const THEME_ICONS = { white: '☀️', dark: '🌙', night: '🔴' }
 
+// Convert PDF.js text items from one page into paragraphs
+function textItemsToParagraphs(items) {
+  const textItems = items.filter(item => typeof item.str === 'string')
+  if (!textItems.length) return []
+
+  // Group by Y coordinate into lines (tolerance = 2 PDF units)
+  const LINE_TOL = 2
+  const lineGroups = []
+  for (const item of textItems) {
+    if (!item.str) continue
+    const y = item.transform[5]
+    const g = lineGroups.find(g => Math.abs(g.y - y) <= LINE_TOL)
+    if (g) {
+      g.items.push(item)
+      g.height = Math.max(g.height, item.height || 0)
+    } else {
+      lineGroups.push({ y, items: [item], height: item.height || 10 })
+    }
+  }
+
+  // Sort top-to-bottom (PDF Y increases upward → sort descending)
+  lineGroups.sort((a, b) => b.y - a.y)
+  for (const g of lineGroups) g.items.sort((a, b) => a.transform[4] - b.transform[4])
+
+  // Compute median gap between lines for paragraph detection
+  const gaps = []
+  for (let i = 0; i < lineGroups.length - 1; i++) {
+    const gap = lineGroups[i].y - lineGroups[i + 1].y
+    if (gap > 0 && gap < 100) gaps.push(gap)
+  }
+  gaps.sort((a, b) => a - b)
+  const medianGap = gaps.length ? gaps[Math.floor(gaps.length / 2)] : 12
+  const PARA_GAP = medianGap * 1.6
+
+  const paragraphs = []
+  let pending = []
+  for (let i = 0; i < lineGroups.length; i++) {
+    const text = lineGroups[i].items.map(it => it.str).join('').replace(/\s+/g, ' ').trim()
+    if (!text) continue
+    pending.push(text)
+    const isLast = i === lineGroups.length - 1
+    const nextGap = isLast ? Infinity : lineGroups[i].y - lineGroups[i + 1].y
+    if (isLast || nextGap > PARA_GAP) {
+      const para = pending.join(' ').replace(/\s+/g, ' ').trim()
+      if (para) paragraphs.push(para)
+      pending = []
+    }
+  }
+  return paragraphs
+}
+
 export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
-  const [page, setPage]             = useState(1)
-  const [total, setTotal]           = useState(0)
-  const [loading, setLoading]       = useState(true)
-  const [showUI, setShowUI]         = useState(true)
-  const [popup, setPopup]           = useState(null) // { word, sentence } | null
-  const [translatePopup, setTranslatePopup] = useState(null) // { text } | null
-  const [selectionInfo, setSelectionInfo]   = useState(null) // { text, x, y } | null
+  const [status, setStatus]           = useState('loading') // loading|extracting|ready|error
+  const [extractProgress, setExtractProgress] = useState(0)
+  const [content, setContent]         = useState([]) // { type:'text', data:string[] } | { type:'image', data:string }
+  const [bookTitle, setBookTitle]     = useState('')
+  const [scrollPct, setScrollPct]     = useState(0)
+  const [showHeader, setShowHeader]   = useState(true)
+  const [fontSize, setFontSize]       = useState(() => {
+    const s = parseInt(localStorage.getItem('reader-font-size'))
+    return FONT_SIZES.includes(s) ? s : 18
+  })
+  const [popup, setPopup]             = useState(null)
+  const [translatePopup, setTranslatePopup] = useState(null)
+  const [selectionInfo, setSelectionInfo]   = useState(null)
 
-  const readerRef    = useRef()
-  const canvasRef    = useRef()
-  const wrapperRef   = useRef()
-  const textLayerRef = useRef(null)
-  const pdfRef       = useRef(null)
-  const renderTaskRef       = useRef(null)
-  const textLayerTaskRef    = useRef(null)
-  const progressTimerRef    = useRef(null)
-  const zoomRef      = useRef(1)
-  const transformRef = useRef({ panX: 0, panY: 0, cssScale: 1 })
-  const currentPageRef = useRef(1)
-
-  // Refs so non-passive / timeout callbacks always see current values
-  const popupOpenRef    = useRef(false)
-  const selInfoRef      = useRef(null)
-
-  const pinchRef     = useRef({ active: false, startDist: 0 })
-  const swipeRef     = useRef({ active: false, startX: 0, startY: 0 })
-  const panRef       = useRef({ active: false, startX: 0, startY: 0, baseX: 0, baseY: 0 })
-  const tapRef       = useRef({ lastTap: 0, timer: null, moved: false })
-  const longPressRef = useRef(null)
+  const scrollRef        = useRef()
+  const contentRef       = useRef()
+  const numPagesRef      = useRef(0)
+  const headerTimerRef   = useRef(null)
+  const progressTimerRef = useRef(null)
+  const savedScrollRef   = useRef(0) // 0–100 pct
+  const popupOpenRef     = useRef(false)
+  const selInfoRef       = useRef(null)
+  const longPressRef     = useRef(null)
+  const touchStartRef    = useRef(null)
+  const movedRef         = useRef(false)
 
   useEffect(() => { popupOpenRef.current = !!(popup || translatePopup) }, [popup, translatePopup])
   useEffect(() => { selInfoRef.current = selectionInfo }, [selectionInfo])
 
-  // ── Load PDF ─────────────────────────────────────────────
+  // ── Load PDF then extract all text ──────────────────────────────────
   useEffect(() => {
     let cancelled = false
     async function load() {
-      setLoading(true)
-      const buffer = await getPDF(bookId)
-      if (!buffer || cancelled) return
-      const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise
-      if (cancelled) { pdf.destroy(); return }
-      pdfRef.current = pdf
-      setTotal(pdf.numPages)
-      updateBookPageCount(bookId, pdf.numPages)
-      const saved = await getProgress(bookId)
-      if (!cancelled) { setPage(Math.min(saved, pdf.numPages)); setLoading(false) }
+      try {
+        const { data: book } = await supabase
+          .from('books')
+          .select('title, current_page, total_pages')
+          .eq('id', bookId)
+          .single()
+        if (cancelled) return
+        if (book?.title) setBookTitle(book.title)
+        const savedPage  = book?.current_page ?? 1
+        const totalPages = book?.total_pages  ?? 1
+        savedScrollRef.current = totalPages > 1 ? ((savedPage - 1) / (totalPages - 1)) * 100 : 0
+
+        setStatus('loading')
+        const buffer = await getPDF(bookId)
+        if (cancelled) return
+
+        const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise
+        if (cancelled) { pdf.destroy(); return }
+        numPagesRef.current = pdf.numPages
+        updateBookPageCount(bookId, pdf.numPages)
+
+        setStatus('extracting')
+        const blocks = []
+
+        for (let p = 1; p <= pdf.numPages; p++) {
+          if (cancelled) break
+          setExtractProgress(Math.round((p / pdf.numPages) * 100))
+
+          const page = await pdf.getPage(p)
+          const vp   = page.getViewport({ scale: 1 })
+          const tc   = await page.getTextContent({ includeMarkedContent: false })
+          const textItems = tc.items.filter(item => typeof item.str === 'string')
+          const totalChars = textItems.reduce((s, i) => s + i.str.length, 0)
+
+          if (totalChars < 20) {
+            // Image-dominant page: render to canvas and embed as JPEG
+            const scale     = Math.min(640 / vp.width, 1.5)
+            const scaledVp  = page.getViewport({ scale })
+            const canvas    = document.createElement('canvas')
+            canvas.width    = Math.round(scaledVp.width)
+            canvas.height   = Math.round(scaledVp.height)
+            try {
+              await page.render({ canvasContext: canvas.getContext('2d'), viewport: scaledVp }).promise
+              blocks.push({ type: 'image', data: canvas.toDataURL('image/jpeg', 0.85) })
+            } catch { /* skip */ }
+          } else {
+            const paras = textItemsToParagraphs(textItems)
+            if (paras.length) blocks.push({ type: 'text', data: paras })
+          }
+          page.cleanup()
+        }
+
+        if (!cancelled) {
+          setContent(blocks)
+          setStatus('ready')
+          pdf.destroy()
+        }
+      } catch (e) {
+        console.error('Reader load error:', e)
+        if (!cancelled) setStatus('error')
+      }
     }
     load()
-    return () => {
-      cancelled = true
-      pdfRef.current?.destroy()
-      pdfRef.current = null
-    }
+    return () => { cancelled = true }
   }, [bookId])
 
-  // ── Render on page/loading change ─────────────────────────
+  // ── Restore scroll position after content mounts ────────────────────
   useEffect(() => {
-    currentPageRef.current = page
-    if (!loading) renderPage(page)
-  }, [page, loading])
+    if (status !== 'ready' || !scrollRef.current) return
+    const pct = savedScrollRef.current
+    if (pct > 0) {
+      requestAnimationFrame(() => {
+        const el = scrollRef.current
+        if (el) el.scrollTop = (pct / 100) * (el.scrollHeight - el.clientHeight)
+      })
+    }
+    // Auto-hide header after 3s of inactivity
+    headerTimerRef.current = setTimeout(() => setShowHeader(false), 3000)
+    return () => clearTimeout(headerTimerRef.current)
+  }, [status])
 
-  // ── Re-render on resize ───────────────────────────────────
-  useEffect(() => {
-    if (loading) return
-    const onResize = () => { if (pdfRef.current) renderPage(currentPageRef.current) }
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
-  }, [loading])
+  // ── Scroll handler ──────────────────────────────────────────────────
+  function handleScroll() {
+    const el = scrollRef.current
+    if (!el) return
+    const pct = el.scrollHeight - el.clientHeight > 0
+      ? (el.scrollTop / (el.scrollHeight - el.clientHeight)) * 100
+      : 0
+    setScrollPct(pct)
 
-  // ── Block browser gestures (non-passive), allow when popup open ─
-  useEffect(() => {
-    const el = readerRef.current
-    const prevent = e => { if (!popupOpenRef.current) e.preventDefault() }
-    el.addEventListener('touchmove', prevent, { passive: false })
-    return () => el.removeEventListener('touchmove', prevent)
-  }, [])
+    clearTimeout(progressTimerRef.current)
+    progressTimerRef.current = setTimeout(() => {
+      const n = numPagesRef.current
+      if (n > 0) saveProgress(bookId, Math.max(1, Math.round((pct / 100) * n)))
+    }, 2000)
 
-  // ── Text selection → floating Traduire button ─────────────
+    clearTimeout(headerTimerRef.current)
+    headerTimerRef.current = setTimeout(() => setShowHeader(false), 3000)
+  }
+
+  // ── Font size ───────────────────────────────────────────────────────
+  function changeFontSize(delta) {
+    setFontSize(prev => {
+      const next = FONT_SIZES[Math.max(0, Math.min(FONT_SIZES.length - 1, FONT_SIZES.indexOf(prev) + delta))]
+      localStorage.setItem('reader-font-size', next)
+      return next
+    })
+  }
+
+  // ── Text selection → floating Traduire ──────────────────────────────
   useEffect(() => {
     let t = null
-    function onSelectionChange() {
+    function onSel() {
       clearTimeout(t)
       t = setTimeout(() => {
         if (popupOpenRef.current) return
-        const sel = window.getSelection()
+        const sel  = window.getSelection()
         const text = sel?.toString().trim()
-        if (!text || text.split(/\s+/).filter(Boolean).length < 2) {
-          setSelectionInfo(null)
-          return
-        }
-        if (!textLayerRef.current?.contains(sel.anchorNode)) {
-          setSelectionInfo(null)
-          return
-        }
+        if (!text || text.split(/\s+/).filter(Boolean).length < 2) { setSelectionInfo(null); return }
+        if (!contentRef.current?.contains(sel.anchorNode))          { setSelectionInfo(null); return }
         try {
           const rect = sel.getRangeAt(0).getBoundingClientRect()
           setSelectionInfo({ text, x: rect.left + rect.width / 2, y: rect.top })
         } catch { setSelectionInfo(null) }
       }, 120)
     }
-    document.addEventListener('selectionchange', onSelectionChange)
-    return () => { document.removeEventListener('selectionchange', onSelectionChange); clearTimeout(t) }
+    document.addEventListener('selectionchange', onSel)
+    return () => { document.removeEventListener('selectionchange', onSel); clearTimeout(t) }
   }, [])
 
-  // ── Keyboard navigation ───────────────────────────────────
+  // ── Keyboard ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = e => {
-      if (popup || translatePopup) {
-        if (e.key === 'Escape') { setPopup(null); setTranslatePopup(null) }
-        return
+      if (e.key === 'Escape') {
+        if (popup || translatePopup) { setPopup(null); setTranslatePopup(null) }
+        else onClose()
       }
-      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goNext()
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') goPrev()
-      else if (e.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, page, total, popup, translatePopup])
+  }, [onClose, popup, translatePopup])
 
-  // ── Canvas + text layer render ────────────────────────────
-  async function renderPage(pageNum) {
-    if (!pdfRef.current || !canvasRef.current || !readerRef.current) return
-
-    if (renderTaskRef.current) {
-      try { renderTaskRef.current.cancel() } catch {}
-      renderTaskRef.current = null
-    }
-    if (textLayerTaskRef.current) {
-      try { textLayerTaskRef.current.cancel() } catch {}
-      textLayerTaskRef.current = null
-    }
-
-    const pg = await pdfRef.current.getPage(pageNum)
-    const dpr = window.devicePixelRatio || 1
-    const containerW = readerRef.current.clientWidth || window.innerWidth
-    const baseVp = pg.getViewport({ scale: 1 })
-    const fitScale = containerW / baseVp.width
-    const cssScale = fitScale * zoomRef.current
-    const viewport = pg.getViewport({ scale: cssScale * dpr })
-
-    const canvas = canvasRef.current
-    canvas.width  = Math.round(viewport.width)
-    canvas.height = Math.round(viewport.height)
-    canvas.style.width  = `${containerW * zoomRef.current}px`
-    canvas.style.height = `${Math.round(viewport.height) / dpr}px`
-
-    const task = pg.render({ canvasContext: canvas.getContext('2d'), viewport })
-    renderTaskRef.current = task
-    try {
-      await task.promise
-      // Debounce progress saves — Supabase network call, 2 s delay
-      clearTimeout(progressTimerRef.current)
-      progressTimerRef.current = setTimeout(() => saveProgress(bookId, pageNum), 2000)
-    } catch (e) {
-      if (e?.name !== 'RenderingCancelledException') console.error(e)
-    }
-    renderTaskRef.current = null
-
-    // Render text layer on top of canvas
-    if (textLayerRef.current) {
-      textLayerRef.current.replaceChildren()
-      const cssW = `${containerW * zoomRef.current}px`
-      const cssH = `${Math.round(viewport.height) / dpr}px`
-      textLayerRef.current.style.width  = cssW
-      textLayerRef.current.style.height = cssH
-      const cssViewport = pg.getViewport({ scale: cssScale })
-      try {
-        const tl = new pdfjsLib.TextLayer({
-          textContentSource: pg.streamTextContent(),
-          container: textLayerRef.current,
-          viewport: cssViewport,
-        })
-        textLayerTaskRef.current = tl
-        await tl.render()
-      } catch (e) {
-        if (!String(e).toLowerCase().includes('cancel')) console.error('TextLayer:', e)
-      }
-      textLayerTaskRef.current = null
-    }
-  }
-
-  // ── Word lookup via text layer DOM ────────────────────────
-  async function getWordAtPoint(clientX, clientY) {
-    if (!textLayerRef.current) return null
-    const el = document.elementFromPoint(clientX, clientY)
-    if (!textLayerRef.current.contains(el)) return null
-
-    const span = el.tagName === 'SPAN' ? el : el.closest?.('span')
-    const str = span?.textContent
-    if (!str?.trim()) return null
-
-    let charIdx = 0
+  // ── Word detection in reflowed HTML ─────────────────────────────────
+  function getWordAtPoint(cx, cy) {
+    if (!contentRef.current) return null
+    let node = null, offset = 0
     if (document.caretPositionFromPoint) {
-      const pos = document.caretPositionFromPoint(clientX, clientY)
-      if (span.contains(pos?.offsetNode)) charIdx = pos.offset
+      const cp = document.caretPositionFromPoint(cx, cy)
+      if (cp) { node = cp.offsetNode; offset = cp.offset }
     } else if (document.caretRangeFromPoint) {
-      const range = document.caretRangeFromPoint(clientX, clientY)
-      if (span.contains(range?.startContainer)) charIdx = range.startOffset
+      const r = document.caretRangeFromPoint(cx, cy)
+      if (r) { node = r.startContainer; offset = r.startOffset }
     }
-
-    const word = extractWordAt(str, charIdx)
-    if (!word) return null
-
-    // Gather surrounding line text for sentence context
-    const spanRect = span.getBoundingClientRect()
-    const lineSpans = Array.from(textLayerRef.current.querySelectorAll('span'))
-      .filter(s => {
-        const r = s.getBoundingClientRect()
-        return r.height > 0 && Math.abs(r.top - spanRect.top) < spanRect.height * 0.6
-      })
-      .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
-    const sentence = lineSpans.map(s => s.textContent).join(' ').trim()
-
+    if (!node || node.nodeType !== Node.TEXT_NODE) return null
+    if (!contentRef.current.contains(node)) return null
+    const str = node.textContent
+    let s = offset, e = offset
+    while (s > 0 && /[a-zA-ZÀ-ÿ''-]/.test(str[s - 1])) s--
+    while (e < str.length && /[a-zA-ZÀ-ÿ''-]/.test(str[e])) e++
+    const word = str.slice(s, e).replace(/[^a-zA-ZÀ-ÿ''-]/g, '').toLowerCase()
+    if (word.length < 2) return null
+    const sentence = node.parentElement?.closest('p')?.textContent?.trim() ?? ''
     return { word, sentence }
   }
 
-  function extractWordAt(str, index) {
-    let s = index, e = index
-    while (s > 0 && /[a-zA-ZÀ-ÿ''-]/.test(str[s - 1])) s--
-    while (e < str.length && /[a-zA-ZÀ-ÿ''-]/.test(str[e])) e++
-    const w = str.slice(s, e).replace(/[^a-zA-ZÀ-ÿ''-]/g, '').toLowerCase()
-    return w.length > 1 ? w : null
-  }
-
-  // ── Transform helpers ─────────────────────────────────────
-  function applyTransform() {
-    if (!wrapperRef.current) return
-    const { panX, panY, cssScale } = transformRef.current
-    wrapperRef.current.style.transform = `translate(${panX}px,${panY}px) scale(${cssScale})`
-  }
-  function resetTransform() {
-    transformRef.current = { panX: 0, panY: 0, cssScale: 1 }
-    applyTransform()
-  }
-  function dist2(touches) {
-    const dx = touches[0].clientX - touches[1].clientX
-    const dy = touches[0].clientY - touches[1].clientY
-    return Math.sqrt(dx * dx + dy * dy)
-  }
-
-  // ── Touch handlers ────────────────────────────────────────
-  function handleTouchStart(e) {
+  // ── Touch handling ───────────────────────────────────────────────────
+  function onTouchStart(e) {
     if (popup || translatePopup) return
-    clearTimeout(tapRef.current.timer)
     clearTimeout(longPressRef.current)
-    tapRef.current.moved = false
-
-    if (e.touches.length === 2) {
-      pinchRef.current = { active: true, startDist: dist2(e.touches) }
-      swipeRef.current.active = false
-    } else if (e.touches.length === 1) {
-      const t = e.touches[0]
-      swipeRef.current = { active: true, startX: t.clientX, startY: t.clientY }
-      panRef.current = { active: zoomRef.current > 1, startX: t.clientX, startY: t.clientY, baseX: transformRef.current.panX, baseY: transformRef.current.panY }
-
-      // Long press (500 ms) on text layer → translate whole line
-      const lx = t.clientX, ly = t.clientY
-      longPressRef.current = setTimeout(() => {
-        if (tapRef.current.moved || selInfoRef.current) return
-        const el = document.elementFromPoint(lx, ly)
-        if (!textLayerRef.current?.contains(el)) return
-        const span = el.tagName === 'SPAN' ? el : el.closest?.('span')
-        if (!span?.textContent?.trim()) return
-        const spanRect = span.getBoundingClientRect()
-        const lineSpans = Array.from(textLayerRef.current.querySelectorAll('span'))
-          .filter(s => {
-            const r = s.getBoundingClientRect()
-            return r.height > 0 && Math.abs(r.top - spanRect.top) < spanRect.height * 0.6
-          })
-          .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
-        const sentence = lineSpans.map(s => s.textContent).join(' ').trim()
-        if (sentence.split(/\s+/).filter(Boolean).length >= 2) {
-          clearTimeout(tapRef.current.timer)
-          tapRef.current.lastTap = 0
-          setTranslatePopup({ text: sentence })
-        }
-      }, 500)
-    }
+    movedRef.current = false
+    touchStartRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY }
+    const lx = e.touches[0].clientX, ly = e.touches[0].clientY
+    longPressRef.current = setTimeout(() => {
+      if (movedRef.current) return
+      const el    = document.elementFromPoint(lx, ly)
+      const para  = el?.closest?.('p')
+      const text  = para?.textContent?.trim()
+      if (text && text.split(/\s+/).length >= 3) setTranslatePopup({ text })
+    }, 500)
   }
-
-  function handleTouchMove(e) {
-    if (popup || translatePopup) return
-    if (e.touches.length === 2 && pinchRef.current.active) {
-      const ratio = dist2(e.touches) / pinchRef.current.startDist
-      transformRef.current.cssScale = Math.max(0.5, Math.min(5, zoomRef.current * ratio))
-      applyTransform()
-      tapRef.current.moved = true
-    } else if (e.touches.length === 1) {
-      const dx = e.touches[0].clientX - swipeRef.current.startX
-      const dy = e.touches[0].clientY - swipeRef.current.startY
-      if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
-        tapRef.current.moved = true
-        clearTimeout(longPressRef.current)
-      }
-      if (panRef.current.active) {
-        transformRef.current.panX = panRef.current.baseX + dx
-        transformRef.current.panY = panRef.current.baseY + dy
-        applyTransform()
-      }
-    }
+  function onTouchMove(e) {
+    if (!touchStartRef.current) return
+    const dx = e.touches[0].clientX - touchStartRef.current.x
+    const dy = e.touches[0].clientY - touchStartRef.current.y
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) { movedRef.current = true; clearTimeout(longPressRef.current) }
   }
-
-  function handleTouchEnd(e) {
+  function onTouchEnd(e) {
     clearTimeout(longPressRef.current)
     if (popup || translatePopup) return
-
-    if (pinchRef.current.active) {
-      pinchRef.current.active = false
-      zoomRef.current = Math.max(0.5, Math.min(5, transformRef.current.cssScale))
-      resetTransform()
-      renderPage(page)
-      return
-    }
-    panRef.current.active = false
-    panRef.current.baseX = transformRef.current.panX
-    panRef.current.baseY = transformRef.current.panY
-
+    if (movedRef.current) return
     const touch = e.changedTouches[0]
     if (!touch) return
-
-    const dx = touch.clientX - swipeRef.current.startX
-    const dy = touch.clientY - swipeRef.current.startY
-
-    if (selectionInfo) {
-      setSelectionInfo(null)
-      window.getSelection()?.removeAllRanges()
+    if (selInfoRef.current) { setSelectionInfo(null); window.getSelection()?.removeAllRanges(); return }
+    const result = getWordAtPoint(touch.clientX, touch.clientY)
+    if (result?.word) {
+      setPopup(result)
+    } else {
+      setShowHeader(true)
+      clearTimeout(headerTimerRef.current)
+      headerTimerRef.current = setTimeout(() => setShowHeader(false), 3000)
     }
-
-    if (swipeRef.current.active && zoomRef.current <= 1 &&
-        Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-      swipeRef.current.active = false
-      if (dx < 0) goNext(); else goPrev()
-      return
-    }
-    swipeRef.current.active = false
-    if (tapRef.current.moved) return
-
-    const now = Date.now()
-    const touchX = touch.clientX
-    const touchY = touch.clientY
-    const tappedPage = currentPageRef.current
-
-    if (tapRef.current.lastTap > 0 && now - tapRef.current.lastTap < 300) {
-      tapRef.current.lastTap = 0
-      const newZoom = zoomRef.current > 1 ? 1 : 2.5
-      zoomRef.current = newZoom
-      resetTransform()
-      renderPage(page)
-      return
-    }
-
-    tapRef.current.lastTap = now
-    tapRef.current.timer = setTimeout(async () => {
-      tapRef.current.lastTap = 0
-      if (tappedPage !== currentPageRef.current) return
-
-      const result = await getWordAtPoint(touchX, touchY)
-      if (result?.word) { setPopup(result); return }
-
-      const vw = window.innerWidth
-      if (zoomRef.current <= 1 && touchX < vw * 0.22) goPrev()
-      else if (zoomRef.current <= 1 && touchX > vw * 0.78) goNext()
-      else setShowUI(v => !v)
-    }, 300)
-  }
-
-  function goPrev() {
-    if (page <= 1) return
-    zoomRef.current = 1; resetTransform(); setPage(p => p - 1)
-  }
-  function goNext() {
-    if (page >= total) return
-    zoomRef.current = 1; resetTransform(); setPage(p => p + 1)
   }
 
   function handleTranslateSelection() {
@@ -395,55 +308,106 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     setTranslatePopup({ text })
   }
 
-  const progress = total > 0 ? (page / total) * 100 : 0
+  // ── Loading / extracting screens ─────────────────────────────────────
+  if (status === 'loading' || status === 'extracting') {
+    const circumference = 2 * Math.PI * 18
+    return (
+      <div className="kindle-reader">
+        <div className="kindle-loading">
+          {status === 'loading' && <span className="spinner large" />}
+          {status === 'extracting' && (
+            <>
+              <div className="kindle-ring-wrap">
+                <svg width="52" height="52" viewBox="0 0 44 44">
+                  <circle cx="22" cy="22" r="18" fill="none" stroke="var(--border)" strokeWidth="3" />
+                  <circle
+                    cx="22" cy="22" r="18" fill="none"
+                    stroke="var(--text-sub)" strokeWidth="3"
+                    strokeDasharray={`${circumference * extractProgress / 100} ${circumference}`}
+                    strokeLinecap="round"
+                    transform="rotate(-90 22 22)"
+                  />
+                </svg>
+                <span className="kindle-ring-pct">{extractProgress}%</span>
+              </div>
+              <p className="kindle-loading-label">Extraction du texte…</p>
+            </>
+          )}
+        </div>
+      </div>
+    )
+  }
 
+  if (status === 'error') {
+    return (
+      <div className="kindle-reader">
+        <div className="kindle-loading">
+          <p style={{ color: 'var(--text-sub)', padding: '0 24px', textAlign: 'center' }}>
+            Impossible de charger ce livre.
+          </p>
+          <button className="popup-retry" style={{ marginTop: 16 }} onClick={onClose}>Retour</button>
+        </div>
+      </div>
+    )
+  }
+
+  // ── Reader ────────────────────────────────────────────────────────────
   return (
-    <div
-      ref={readerRef}
-      className="reader"
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-    >
-      <div className={`reader-header${showUI ? ' visible' : ''}`}>
-        <button className="reader-btn" onClick={onClose} aria-label="Back">
+    <div className="kindle-reader">
+      {/* Auto-hiding header */}
+      <div className={`kindle-header${showHeader ? ' visible' : ''}`}>
+        <button className="kindle-nav-btn" onClick={onClose} aria-label="Retour">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
             <polyline points="15 18 9 12 15 6" />
           </svg>
         </button>
-        <span className="page-counter">{page} / {total}</span>
-        <button className="reader-btn" onClick={onToggleTheme} aria-label="Toggle theme">
+        <span className="kindle-book-title">{bookTitle}</span>
+        <button className="kindle-nav-btn" onClick={onToggleTheme} aria-label="Mode lecture">
           {THEME_ICONS[theme] ?? '☀️'}
         </button>
       </div>
 
-      <div className="canvas-viewport">
-        {loading
-          ? <div className="reader-spinner"><span className="spinner large" /></div>
-          : (
-            <div ref={wrapperRef} className="canvas-transform">
-              <div className="page-wrapper">
-                <canvas ref={canvasRef} />
-                <div ref={textLayerRef} className="text-layer" />
-              </div>
-            </div>
-          )
-        }
-      </div>
-
-      <div className={`reader-footer${showUI && !loading ? ' visible' : ''}`}>
-        <button className="nav-btn" onClick={goPrev} disabled={page <= 1} aria-label="Previous">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="15 18 9 12 15 6" /></svg>
-        </button>
-        <div className="progress-track">
-          <div className="progress-fill" style={{ width: `${progress}%` }} />
+      {/* Scrollable reading area */}
+      <div
+        ref={scrollRef}
+        className="kindle-scroll"
+        onScroll={handleScroll}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      >
+        <div ref={contentRef} className="kindle-content" style={{ fontSize: `${fontSize}px` }}>
+          {content.map((block, i) =>
+            block.type === 'image'
+              ? <img key={i} className="kindle-img" src={block.data} alt="" />
+              : block.data.map((para, j) => <p key={`${i}-${j}`}>{para}</p>)
+          )}
         </div>
-        <button className="nav-btn" onClick={goNext} disabled={page >= total} aria-label="Next">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><polyline points="9 18 15 12 9 6" /></svg>
-        </button>
       </div>
 
-      {/* Floating translate button — shown when desktop text is selected */}
+      {/* Font size pill */}
+      <div className="kindle-font-bar">
+        <button
+          className="kindle-font-btn"
+          onClick={() => changeFontSize(-1)}
+          disabled={fontSize <= FONT_SIZES[0]}
+          aria-label="Diminuer la taille"
+        >A−</button>
+        <span className="kindle-font-cur">{fontSize}</span>
+        <button
+          className="kindle-font-btn"
+          onClick={() => changeFontSize(+1)}
+          disabled={fontSize >= FONT_SIZES[FONT_SIZES.length - 1]}
+          aria-label="Augmenter la taille"
+        >A+</button>
+      </div>
+
+      {/* Thin progress bar */}
+      <div className="kindle-progress">
+        <div className="kindle-progress-fill" style={{ width: `${scrollPct}%` }} />
+      </div>
+
+      {/* Floating Traduire button (desktop selection) */}
       {selectionInfo && !popup && !translatePopup && (
         <button
           className="translate-fab"
@@ -456,22 +420,11 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
       )}
 
       {popup && (
-        <WordPopup
-          word={popup.word}
-          sentence={popup.sentence}
-          bookId={bookId}
-          onClose={() => setPopup(null)}
-        />
+        <WordPopup word={popup.word} sentence={popup.sentence} bookId={bookId} onClose={() => setPopup(null)} />
       )}
-
       {translatePopup && (
-        <TranslatePopup
-          text={translatePopup.text}
-          onClose={() => setTranslatePopup(null)}
-        />
+        <TranslatePopup text={translatePopup.text} onClose={() => setTranslatePopup(null)} />
       )}
-
-      {theme === 'night' && <div className="night-overlay" />}
     </div>
   )
 }

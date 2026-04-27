@@ -4,7 +4,7 @@ import { generateCover } from '../utils/pdfUtils'
 import BookCard from './BookCard'
 import TitleModal from './TitleModal'
 
-const THEME_ICONS = { white: '📖', sepia: '☀️', dark: '🌙' }
+const THEME_ICONS = { white: '☀️', dark: '🌙', night: '🔴' }
 
 function cleanFilename(name) {
   return name
