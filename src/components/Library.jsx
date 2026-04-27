@@ -18,6 +18,7 @@ export default function Library({ onOpenBook, theme, onToggleTheme }) {
   const [books, setBooks] = useState([])
   const [uploading, setUploading] = useState(false)
   const [pending, setPending] = useState(null) // { buffer, fileName, title }
+  const [uploadError, setUploadError] = useState(null)
   const fileInputRef = useRef()
 
   useEffect(() => { loadBooks() }, [])
@@ -39,6 +40,7 @@ export default function Library({ onOpenBook, theme, onToggleTheme }) {
     const { buffer, fileName } = pending
     setPending(null)
     setUploading(true)
+    setUploadError(null)
     try {
       const id = crypto.randomUUID()
       await addBook(id, { id, title, fileName, addedAt: Date.now(), pageCount: 0, cover: null }, buffer)
@@ -48,6 +50,9 @@ export default function Library({ onOpenBook, theme, onToggleTheme }) {
         await updateBookCover(id, cover)
         setBooks(await getAllBooks())
       }
+    } catch (e) {
+      console.error('Upload failed:', e)
+      setUploadError(e?.message ?? String(e))
     } finally {
       setUploading(false)
     }
@@ -68,6 +73,12 @@ export default function Library({ onOpenBook, theme, onToggleTheme }) {
       </header>
 
       <input ref={fileInputRef} type="file" accept=".pdf,application/pdf" style={{ display: 'none' }} onChange={handleFile} />
+
+      {uploadError && (
+        <div className="upload-error" onClick={() => setUploadError(null)}>
+          ⚠️ Erreur upload : {uploadError}
+        </div>
+      )}
 
       {pending && (
         <TitleModal

@@ -363,6 +363,25 @@ html, body {
   to   { transform: translateY(0);    opacity: 1; }
 }
 
+/* ─── Upload error banner ─────────────────────────────── */
+.upload-error {
+  margin: 12px 16px 0;
+  padding: 12px 16px;
+  background: #fef2f2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+[data-theme="dark"] .upload-error,
+[data-theme="night"] .upload-error {
+  background: #3b1212;
+  color: #fca5a5;
+  border-color: #7f1d1d;
+}
+
 /* ─── Empty state ─────────────────────────────────────── */
 .empty-state {
   flex: 1;
