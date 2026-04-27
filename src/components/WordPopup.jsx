@@ -1,15 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
-import { lookupWord, translateText, getApiKey, saveApiKey } from '../api/claude'
+import { lookupWord, translateText } from '../api/claude'
 import { saveWord } from '../db'
 
 const LEVEL_COLOR = { easy: '#22c55e', medium: '#f59e0b', hard: '#ef4444' }
 const LEVEL_LABEL = { easy: 'facile', medium: 'moyen', hard: 'difficile' }
 
 export default function WordPopup({ word, sentence, bookId, onClose }) {
-  const [phase, setPhase] = useState('loading') // loading | result | error | no_key | translating | translated
+  const [phase, setPhase] = useState('loading') // loading | result | error | translating | translated
   const [data, setData] = useState(null)
   const [translation, setTranslation] = useState(null)
-  const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [saved, setSaved] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
   const dragY = useRef(0)
@@ -26,22 +25,9 @@ export default function WordPopup({ word, sentence, bookId, onClose }) {
       setData(result)
       setPhase('result')
     } catch (e) {
-      if (e.code === 'NO_KEY' || e.code === 'INVALID_KEY') {
-        setErrorMsg(e.code === 'INVALID_KEY' ? 'Clé API invalide.' : '')
-        setPhase('no_key')
-      } else {
-        setErrorMsg(e.message)
-        setPhase('error')
-      }
+      setErrorMsg(e.message)
+      setPhase('error')
     }
-  }
-
-  async function handleSaveKey(e) {
-    e.preventDefault()
-    if (!apiKeyDraft.trim()) return
-    saveApiKey(apiKeyDraft)
-    setApiKeyDraft('')
-    fetchDefinition()
   }
 
   async function handleTranslate() {
@@ -52,7 +38,7 @@ export default function WordPopup({ word, sentence, bookId, onClose }) {
       setTranslation(result)
       setPhase('translated')
     } catch (e) {
-      setPhase('result') // fall back to definition view on error
+      setPhase('result')
     }
   }
 
@@ -62,7 +48,6 @@ export default function WordPopup({ word, sentence, bookId, onClose }) {
     setSaved(true)
   }
 
-  // Swipe-down to dismiss
   function onTouchStart(e) { dragY.current = e.touches[0].clientY }
   function onTouchEnd(e) {
     if (e.changedTouches[0].clientY - dragY.current > 80) onClose()
@@ -75,30 +60,6 @@ export default function WordPopup({ word, sentence, bookId, onClose }) {
 
         {phase === 'loading' && (
           <div className="popup-loading"><span className="spinner large" /></div>
-        )}
-
-        {phase === 'no_key' && (
-          <div className="popup-key-prompt">
-            <p className="popup-key-title">Clé Claude API requise</p>
-            {errorMsg && <p className="popup-key-error">{errorMsg}</p>}
-            <p className="popup-key-hint">
-              Obtenez une clé sur{' '}
-              <a href="https://console.anthropic.com" target="_blank" rel="noreferrer">console.anthropic.com</a>
-            </p>
-            <form onSubmit={handleSaveKey} className="popup-key-form">
-              <input
-                className="popup-key-input"
-                type="password"
-                value={apiKeyDraft}
-                onChange={e => setApiKeyDraft(e.target.value)}
-                placeholder="sk-ant-..."
-                autoFocus
-              />
-              <button type="submit" className="popup-key-btn" disabled={!apiKeyDraft.trim()}>
-                Confirmer
-              </button>
-            </form>
-          </div>
         )}
 
         {phase === 'error' && (

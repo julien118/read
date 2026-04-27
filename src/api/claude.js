@@ -1,19 +1,8 @@
 const MODEL = 'claude-sonnet-4-20250514'
-const API_URL = 'https://api.anthropic.com/v1/messages'
-export const KEY_STORAGE = 'claude_api_key'
-
-export function getApiKey() {
-  return import.meta.env.VITE_ANTHROPIC_API_KEY || localStorage.getItem(KEY_STORAGE) || ''
-}
-export function saveApiKey(key) {
-  localStorage.setItem(KEY_STORAGE, key.trim())
-}
+const API_URL = '/api/claude'
 
 async function callClaude(system, userContent) {
-  const key = getApiKey()
   console.log('[Claude] callClaude called, userContent:', userContent)
-  console.log('[Claude] API key present:', !!key, key ? `(${key.slice(0, 8)}...)` : '(none)')
-  if (!key) { const e = new Error('NO_KEY'); e.code = 'NO_KEY'; throw e }
 
   const body = JSON.stringify({
     model: MODEL,
@@ -25,12 +14,7 @@ async function callClaude(system, userContent) {
 
   const res = await fetch(API_URL, {
     method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'content-type': 'application/json',
-    },
+    headers: { 'content-type': 'application/json' },
     body,
   })
 
