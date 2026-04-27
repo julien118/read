@@ -514,11 +514,71 @@ html, body {
   flex-shrink: 0;
   width: 100%;
 }
-.canvas-transform canvas {
+.page-wrapper {
+  position: relative;
+  width: 100%;
+}
+.page-wrapper canvas {
   display: block;
-  /* width set explicitly by JS; max-width guards against any overflow */
   max-width: 100%;
 }
+
+/* ─── PDF.js Text Layer ───────────────────────────────── */
+.text-layer {
+  position: absolute;
+  top: 0; left: 0;
+  overflow: hidden;
+  line-height: 1;
+  text-size-adjust: none;
+  -webkit-text-size-adjust: none;
+  forced-color-adjust: none;
+  pointer-events: auto;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.text-layer span,
+.text-layer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+.text-layer .markedContent {
+  top: 0;
+  height: 0;
+}
+.text-layer ::selection {
+  background: rgba(37, 99, 235, 0.3);
+  color: transparent;
+}
+[data-theme="dark"] .text-layer ::selection {
+  background: rgba(96, 165, 250, 0.35);
+}
+[data-theme="night"] .text-layer ::selection {
+  background: rgba(251, 191, 36, 0.35);
+}
+
+/* ─── Floating Traduire button ────────────────────────── */
+.translate-fab {
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 250;
+  padding: 9px 18px;
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 100px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.28);
+  animation: fadeIn 0.15s ease;
+  white-space: nowrap;
+}
+[data-theme="dark"] .translate-fab,
+[data-theme="night"] .translate-fab { color: #111; }
 
 /* Theme tints on canvas (no re-render needed) */
 [data-theme="dark"] .canvas-transform canvas {
@@ -558,6 +618,10 @@ html, body {
 @keyframes pulse {
   0%, 100% { opacity: 0.5; }
   50%       { opacity: 1; }
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* ─── Night overlay ───────────────────────────────────── */
@@ -677,6 +741,14 @@ html, body {
   font-style: italic;
   line-height: 1.5;
   margin-bottom: 18px;
+}
+
+.translate-source {
+  font-size: 13px;
+  color: var(--text-sub);
+  font-style: italic;
+  line-height: 1.5;
+  margin-bottom: 14px;
 }
 
 .popup-translation {

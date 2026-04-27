@@ -1,4 +1,4 @@
-const MODEL = 'claude-sonnet-4-6'
+const MODEL = 'claude-sonnet-4-20250514'
 const API_URL = 'https://api.anthropic.com/v1/messages'
 export const KEY_STORAGE = 'claude_api_key'
 

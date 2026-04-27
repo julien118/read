@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { getPDF, saveProgress, getProgress, updateBookPageCount } from '../db'
 import WordPopup from './WordPopup'
+import TranslatePopup from './TranslatePopup'
 import * as pdfjsLib from 'pdfjs-dist'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -11,32 +12,39 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 const THEME_ICONS = { white: '☀️', dark: '🌙', night: '🔴' }
 
 export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
-  const [page, setPage] = useState(1)
-  const [total, setTotal] = useState(0)
-  const [loading, setLoading] = useState(true)
-  const [showUI, setShowUI] = useState(true)
-  const [popup, setPopup] = useState(null) // { word, sentence } | null
+  const [page, setPage]             = useState(1)
+  const [total, setTotal]           = useState(0)
+  const [loading, setLoading]       = useState(true)
+  const [showUI, setShowUI]         = useState(true)
+  const [popup, setPopup]           = useState(null) // { word, sentence } | null
+  const [translatePopup, setTranslatePopup] = useState(null) // { text } | null
+  const [selectionInfo, setSelectionInfo]   = useState(null) // { text, x, y } | null
 
   const readerRef    = useRef()
   const canvasRef    = useRef()
   const wrapperRef   = useRef()
+  const textLayerRef = useRef(null)
   const pdfRef       = useRef(null)
-  const renderTaskRef = useRef(null)
+  const renderTaskRef     = useRef(null)
+  const textLayerTaskRef  = useRef(null)
   const zoomRef      = useRef(1)
   const transformRef = useRef({ panX: 0, panY: 0, cssScale: 1 })
   const currentPageRef = useRef(1)
-  const textCacheRef   = useRef(null) // { page, content }
-  const popupOpenRef   = useRef(false)
 
-  const pinchRef = useRef({ active: false, startDist: 0 })
-  const swipeRef = useRef({ active: false, startX: 0, startY: 0 })
-  const panRef   = useRef({ active: false, startX: 0, startY: 0, baseX: 0, baseY: 0 })
-  const tapRef   = useRef({ lastTap: 0, timer: null, moved: false })
+  // Refs so non-passive / timeout callbacks always see current values
+  const popupOpenRef    = useRef(false)
+  const selInfoRef      = useRef(null)
 
-  // Keep popupOpenRef in sync so the non-passive touchmove handler sees it
-  useEffect(() => { popupOpenRef.current = !!popup }, [popup])
+  const pinchRef     = useRef({ active: false, startDist: 0 })
+  const swipeRef     = useRef({ active: false, startX: 0, startY: 0 })
+  const panRef       = useRef({ active: false, startX: 0, startY: 0, baseX: 0, baseY: 0 })
+  const tapRef       = useRef({ lastTap: 0, timer: null, moved: false })
+  const longPressRef = useRef(null)
 
-  // ── Load PDF ────────────────────────────────────────────
+  useEffect(() => { popupOpenRef.current = !!(popup || translatePopup) }, [popup, translatePopup])
+  useEffect(() => { selInfoRef.current = selectionInfo }, [selectionInfo])
+
+  // ── Load PDF ─────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false
     async function load() {
@@ -59,13 +67,13 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     }
   }, [bookId])
 
-  // ── Render on page change ────────────────────────────────
+  // ── Render on page/loading change ─────────────────────────
   useEffect(() => {
     currentPageRef.current = page
     if (!loading) renderPage(page)
   }, [page, loading])
 
-  // ── Re-render on resize ─────────────────────────────────
+  // ── Re-render on resize ───────────────────────────────────
   useEffect(() => {
     if (loading) return
     const onResize = () => { if (pdfRef.current) renderPage(currentPageRef.current) }
@@ -73,7 +81,7 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     return () => window.removeEventListener('resize', onResize)
   }, [loading])
 
-  // ── Prevent browser gestures (non-passive, skip when popup open) ─
+  // ── Block browser gestures (non-passive), allow when popup open ─
   useEffect(() => {
     const el = readerRef.current
     const prevent = e => { if (!popupOpenRef.current) e.preventDefault() }
@@ -81,31 +89,68 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     return () => el.removeEventListener('touchmove', prevent)
   }, [])
 
-  // ── Keyboard navigation ──────────────────────────────────
+  // ── Text selection → floating Traduire button ─────────────
+  useEffect(() => {
+    let t = null
+    function onSelectionChange() {
+      clearTimeout(t)
+      t = setTimeout(() => {
+        if (popupOpenRef.current) return
+        const sel = window.getSelection()
+        const text = sel?.toString().trim()
+        if (!text || text.split(/\s+/).filter(Boolean).length < 2) {
+          setSelectionInfo(null)
+          return
+        }
+        if (!textLayerRef.current?.contains(sel.anchorNode)) {
+          setSelectionInfo(null)
+          return
+        }
+        try {
+          const rect = sel.getRangeAt(0).getBoundingClientRect()
+          setSelectionInfo({ text, x: rect.left + rect.width / 2, y: rect.top })
+        } catch { setSelectionInfo(null) }
+      }, 120)
+    }
+    document.addEventListener('selectionchange', onSelectionChange)
+    return () => { document.removeEventListener('selectionchange', onSelectionChange); clearTimeout(t) }
+  }, [])
+
+  // ── Keyboard navigation ───────────────────────────────────
   useEffect(() => {
     const onKey = e => {
-      if (popup) { if (e.key === 'Escape') setPopup(null); return }
+      if (popup || translatePopup) {
+        if (e.key === 'Escape') { setPopup(null); setTranslatePopup(null) }
+        return
+      }
       if (e.key === 'ArrowRight' || e.key === 'ArrowDown') goNext()
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') goPrev()
       else if (e.key === 'Escape') onClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose, page, total, popup])
+  }, [onClose, page, total, popup, translatePopup])
 
-  // ── Canvas render ────────────────────────────────────────
+  // ── Canvas + text layer render ────────────────────────────
   async function renderPage(pageNum) {
     if (!pdfRef.current || !canvasRef.current || !readerRef.current) return
+
     if (renderTaskRef.current) {
       try { renderTaskRef.current.cancel() } catch {}
       renderTaskRef.current = null
     }
+    if (textLayerTaskRef.current) {
+      try { textLayerTaskRef.current.cancel() } catch {}
+      textLayerTaskRef.current = null
+    }
+
     const pg = await pdfRef.current.getPage(pageNum)
     const dpr = window.devicePixelRatio || 1
     const containerW = readerRef.current.clientWidth || window.innerWidth
     const baseVp = pg.getViewport({ scale: 1 })
     const fitScale = containerW / baseVp.width
-    const viewport = pg.getViewport({ scale: fitScale * zoomRef.current * dpr })
+    const cssScale = fitScale * zoomRef.current
+    const viewport = pg.getViewport({ scale: cssScale * dpr })
 
     const canvas = canvasRef.current
     canvas.width  = Math.round(viewport.width)
@@ -123,62 +168,62 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     }
     renderTaskRef.current = null
 
-    // Pre-cache text content for word lookup (non-blocking)
-    pg.getTextContent().then(c => { textCacheRef.current = { page: pageNum, content: c } }).catch(() => {})
+    // Render text layer on top of canvas
+    if (textLayerRef.current) {
+      textLayerRef.current.replaceChildren()
+      const cssW = `${containerW * zoomRef.current}px`
+      const cssH = `${Math.round(viewport.height) / dpr}px`
+      textLayerRef.current.style.width  = cssW
+      textLayerRef.current.style.height = cssH
+      const cssViewport = pg.getViewport({ scale: cssScale })
+      try {
+        const tl = new pdfjsLib.TextLayer({
+          textContentSource: pg.streamTextContent(),
+          container: textLayerRef.current,
+          viewport: cssViewport,
+        })
+        textLayerTaskRef.current = tl
+        await tl.render()
+      } catch (e) {
+        if (!String(e).toLowerCase().includes('cancel')) console.error('TextLayer:', e)
+      }
+      textLayerTaskRef.current = null
+    }
   }
 
-  // ── Word lookup via PDF coordinate hit-test ──────────────
-  async function getWordAtTap(clientX, clientY, pageNum) {
-    if (!pdfRef.current || !canvasRef.current || !readerRef.current) return null
+  // ── Word lookup via text layer DOM ────────────────────────
+  async function getWordAtPoint(clientX, clientY) {
+    if (!textLayerRef.current) return null
+    const el = document.elementFromPoint(clientX, clientY)
+    if (!textLayerRef.current.contains(el)) return null
 
-    let cached = textCacheRef.current
-    if (!cached || cached.page !== pageNum) {
-      try {
-        const pg = await pdfRef.current.getPage(pageNum)
-        const content = await pg.getTextContent()
-        textCacheRef.current = { page: pageNum, content }
-        cached = textCacheRef.current
-      } catch { return null }
+    const span = el.tagName === 'SPAN' ? el : el.closest?.('span')
+    const str = span?.textContent
+    if (!str?.trim()) return null
+
+    let charIdx = 0
+    if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(clientX, clientY)
+      if (span.contains(pos?.offsetNode)) charIdx = pos.offset
+    } else if (document.caretRangeFromPoint) {
+      const range = document.caretRangeFromPoint(clientX, clientY)
+      if (span.contains(range?.startContainer)) charIdx = range.startOffset
     }
 
-    const pg = await pdfRef.current.getPage(pageNum)
-    const containerW = readerRef.current.clientWidth || window.innerWidth
-    const baseVp = pg.getViewport({ scale: 1 })
-    const fitScale = containerW / baseVp.width
-    const cssVp = pg.getViewport({ scale: fitScale * zoomRef.current })
+    const word = extractWordAt(str, charIdx)
+    if (!word) return null
 
-    const rect = canvasRef.current.getBoundingClientRect()
-    const cssX = clientX - rect.left
-    const cssY = clientY - rect.top
-    const [pdfX, pdfY] = cssVp.convertToPdfPoint(cssX, cssY)
+    // Gather surrounding line text for sentence context
+    const spanRect = span.getBoundingClientRect()
+    const lineSpans = Array.from(textLayerRef.current.querySelectorAll('span'))
+      .filter(s => {
+        const r = s.getBoundingClientRect()
+        return r.height > 0 && Math.abs(r.top - spanRect.top) < spanRect.height * 0.6
+      })
+      .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+    const sentence = lineSpans.map(s => s.textContent).join(' ').trim()
 
-    let hitWord = null
-    let hitBaselineY = null
-
-    for (const item of cached.content.items) {
-      if (!item.str?.trim()) continue
-      const [a,, , d, ex, ey] = item.transform
-      const w = item.width ?? Math.abs(a) * item.str.length * 0.55
-      const h = Math.abs(d) * 1.4
-
-      if (pdfX >= ex && pdfX <= ex + w && pdfY >= ey - h * 0.15 && pdfY <= ey + h) {
-        const relX = w > 0 ? (pdfX - ex) / w : 0
-        const idx = Math.min(Math.floor(relX * item.str.length), item.str.length - 1)
-        hitWord = extractWordAt(item.str, idx)
-        hitBaselineY = ey
-        break
-      }
-    }
-
-    if (!hitWord) return null
-
-    // Gather the full line as sentence context
-    const lineItems = cached.content.items
-      .filter(it => it.str && Math.abs(it.transform[5] - hitBaselineY) < 5)
-      .sort((a, b) => a.transform[4] - b.transform[4])
-    const sentence = lineItems.map(i => i.str).join(' ').trim()
-
-    return { word: hitWord, sentence }
+    return { word, sentence }
   }
 
   function extractWordAt(str, index) {
@@ -189,7 +234,7 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     return w.length > 1 ? w : null
   }
 
-  // ── Transform helpers ────────────────────────────────────
+  // ── Transform helpers ─────────────────────────────────────
   function applyTransform() {
     if (!wrapperRef.current) return
     const { panX, panY, cssScale } = transformRef.current
@@ -205,11 +250,13 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     return Math.sqrt(dx * dx + dy * dy)
   }
 
-  // ── Touch handlers ───────────────────────────────────────
+  // ── Touch handlers ────────────────────────────────────────
   function handleTouchStart(e) {
-    if (popup) return // popup absorbs events
+    if (popup || translatePopup) return
     clearTimeout(tapRef.current.timer)
+    clearTimeout(longPressRef.current)
     tapRef.current.moved = false
+
     if (e.touches.length === 2) {
       pinchRef.current = { active: true, startDist: dist2(e.touches) }
       swipeRef.current.active = false
@@ -217,11 +264,34 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
       const t = e.touches[0]
       swipeRef.current = { active: true, startX: t.clientX, startY: t.clientY }
       panRef.current = { active: zoomRef.current > 1, startX: t.clientX, startY: t.clientY, baseX: transformRef.current.panX, baseY: transformRef.current.panY }
+
+      // Long press (500 ms) on text layer → translate whole line
+      const lx = t.clientX, ly = t.clientY
+      longPressRef.current = setTimeout(() => {
+        if (tapRef.current.moved || selInfoRef.current) return
+        const el = document.elementFromPoint(lx, ly)
+        if (!textLayerRef.current?.contains(el)) return
+        const span = el.tagName === 'SPAN' ? el : el.closest?.('span')
+        if (!span?.textContent?.trim()) return
+        const spanRect = span.getBoundingClientRect()
+        const lineSpans = Array.from(textLayerRef.current.querySelectorAll('span'))
+          .filter(s => {
+            const r = s.getBoundingClientRect()
+            return r.height > 0 && Math.abs(r.top - spanRect.top) < spanRect.height * 0.6
+          })
+          .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+        const sentence = lineSpans.map(s => s.textContent).join(' ').trim()
+        if (sentence.split(/\s+/).filter(Boolean).length >= 2) {
+          clearTimeout(tapRef.current.timer)
+          tapRef.current.lastTap = 0
+          setTranslatePopup({ text: sentence })
+        }
+      }, 500)
     }
   }
 
   function handleTouchMove(e) {
-    if (popup) return
+    if (popup || translatePopup) return
     if (e.touches.length === 2 && pinchRef.current.active) {
       const ratio = dist2(e.touches) / pinchRef.current.startDist
       transformRef.current.cssScale = Math.max(0.5, Math.min(5, zoomRef.current * ratio))
@@ -230,7 +300,10 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     } else if (e.touches.length === 1) {
       const dx = e.touches[0].clientX - swipeRef.current.startX
       const dy = e.touches[0].clientY - swipeRef.current.startY
-      if (Math.abs(dx) > 6 || Math.abs(dy) > 6) tapRef.current.moved = true
+      if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
+        tapRef.current.moved = true
+        clearTimeout(longPressRef.current)
+      }
       if (panRef.current.active) {
         transformRef.current.panX = panRef.current.baseX + dx
         transformRef.current.panY = panRef.current.baseY + dy
@@ -240,11 +313,12 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   }
 
   function handleTouchEnd(e) {
-    if (popup) return
+    clearTimeout(longPressRef.current)
+    if (popup || translatePopup) return
+
     if (pinchRef.current.active) {
       pinchRef.current.active = false
-      const newZoom = Math.max(0.5, Math.min(5, transformRef.current.cssScale))
-      zoomRef.current = newZoom
+      zoomRef.current = Math.max(0.5, Math.min(5, transformRef.current.cssScale))
       resetTransform()
       renderPage(page)
       return
@@ -258,6 +332,11 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
 
     const dx = touch.clientX - swipeRef.current.startX
     const dy = touch.clientY - swipeRef.current.startY
+
+    if (selectionInfo) {
+      setSelectionInfo(null)
+      window.getSelection()?.removeAllRanges()
+    }
 
     if (swipeRef.current.active && zoomRef.current <= 1 &&
         Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.5) {
@@ -287,11 +366,9 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
       tapRef.current.lastTap = 0
       if (tappedPage !== currentPageRef.current) return
 
-      // Try word lookup first
-      const result = await getWordAtTap(touchX, touchY, tappedPage)
+      const result = await getWordAtPoint(touchX, touchY)
       if (result?.word) { setPopup(result); return }
 
-      // Fall back: edge tap navigation or UI toggle
       const vw = window.innerWidth
       if (zoomRef.current <= 1 && touchX < vw * 0.22) goPrev()
       else if (zoomRef.current <= 1 && touchX > vw * 0.78) goNext()
@@ -306,6 +383,13 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   function goNext() {
     if (page >= total) return
     zoomRef.current = 1; resetTransform(); setPage(p => p + 1)
+  }
+
+  function handleTranslateSelection() {
+    const text = selectionInfo.text
+    setSelectionInfo(null)
+    window.getSelection()?.removeAllRanges()
+    setTranslatePopup({ text })
   }
 
   const progress = total > 0 ? (page / total) * 100 : 0
@@ -333,7 +417,14 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
       <div className="canvas-viewport">
         {loading
           ? <div className="reader-spinner"><span className="spinner large" /></div>
-          : <div ref={wrapperRef} className="canvas-transform"><canvas ref={canvasRef} /></div>
+          : (
+            <div ref={wrapperRef} className="canvas-transform">
+              <div className="page-wrapper">
+                <canvas ref={canvasRef} />
+                <div ref={textLayerRef} className="text-layer" />
+              </div>
+            </div>
+          )
         }
       </div>
 
@@ -349,6 +440,18 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
         </button>
       </div>
 
+      {/* Floating translate button — shown when desktop text is selected */}
+      {selectionInfo && !popup && !translatePopup && (
+        <button
+          className="translate-fab"
+          style={{ left: `${selectionInfo.x}px`, top: `${Math.max(64, selectionInfo.y - 48)}px` }}
+          onMouseDown={e => e.preventDefault()}
+          onClick={handleTranslateSelection}
+        >
+          Traduire
+        </button>
+      )}
+
       {popup && (
         <WordPopup
           word={popup.word}
@@ -356,6 +459,15 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
           onClose={() => setPopup(null)}
         />
       )}
+
+      {translatePopup && (
+        <TranslatePopup
+          text={translatePopup.text}
+          onClose={() => setTranslatePopup(null)}
+        />
+      )}
+
+      {theme === 'night' && <div className="night-overlay" />}
     </div>
   )
 }
