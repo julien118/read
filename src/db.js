@@ -68,11 +68,14 @@ export async function getPDF(bookId, onProgress = null) {
   if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`)
 
   const contentLength = +response.headers.get('content-length')
-  if (!onProgress || !response.body || !contentLength) {
+  const canStream = onProgress && contentLength &&
+    response.body != null && typeof response.body.getReader === 'function'
+
+  if (!canStream) {
     return response.arrayBuffer()
   }
 
-  // Stream with progress
+  // Stream with progress — reader.read() loop (Safari-compatible, no for-await-of)
   const reader = response.body.getReader()
   const chunks = []
   let received = 0
@@ -83,10 +86,13 @@ export async function getPDF(bookId, onProgress = null) {
     received += value.length
     onProgress(Math.round((received / contentLength) * 100))
   }
+
+  // Concatenate chunks into a single ArrayBuffer
   const total = chunks.reduce((s, c) => s + c.length, 0)
   const buf = new Uint8Array(total)
   let offset = 0
-  for (const chunk of chunks) { buf.set(chunk, offset); offset += chunk.length }
+  let i = 0
+  while (i < chunks.length) { buf.set(chunks[i], offset); offset += chunks[i].length; i++ }
   return buf.buffer
 }
 
