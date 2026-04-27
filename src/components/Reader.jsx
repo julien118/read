@@ -4,8 +4,7 @@ import { supabase } from '../lib/supabase'
 import WordPopup from './WordPopup'
 import TranslatePopup from './TranslatePopup'
 const pdfjsLib = window['pdfjs-dist/build/pdf']
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
+pdfjsLib.GlobalWorkerOptions.workerSrc = ''
 
 const FONT_SIZES = [14, 16, 18, 20, 22, 24]
 const THEME_ICONS = { white: '☀️', dark: '🌙', night: '🔴' }
@@ -119,7 +118,9 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
         const pdf = await pdfjsLib.getDocument({
           data: new Uint8Array(buffer),
           isEvalSupported: false,
+          useWorkerFetch: false,
           useSystemFonts: true,
+          disableWorker: true,
         }).promise
         if (cancelled) { pdf.destroy(); return }
         numPagesRef.current = pdf.numPages

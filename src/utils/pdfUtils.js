@@ -5,7 +5,9 @@ export async function generateCover(buffer) {
     pdf = await pdfjsLib.getDocument({
       data: new Uint8Array(buffer),
       isEvalSupported: false,
+      useWorkerFetch: false,
       useSystemFonts: true,
+      disableWorker: true,
     }).promise
     const page = await pdf.getPage(1)
     const vp = page.getViewport({ scale: 1 })
