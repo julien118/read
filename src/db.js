@@ -33,6 +33,9 @@ export async function addBook(id, metadata, pdfBuffer) {
   const storagePath = `${id}-${safeName(metadata.fileName)}`
   const blob = new Blob([pdfBuffer], { type: 'application/pdf' })
 
+  // Ensure bucket exists (no-op if already created from Dashboard)
+  await supabase.storage.createBucket('books', { public: false }).catch(() => {})
+
   const { error: uploadError } = await supabase.storage
     .from('books')
     .upload(storagePath, blob, { contentType: 'application/pdf', upsert: false })

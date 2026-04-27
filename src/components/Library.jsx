@@ -52,7 +52,9 @@ export default function Library({ onOpenBook, theme, onToggleTheme }) {
       }
     } catch (e) {
       console.error('Upload failed:', e)
-      setUploadError(e?.message ?? String(e))
+      const msg = e?.message ?? String(e)
+      const code = e?.error ?? e?.statusCode ?? ''
+      setUploadError(code ? `${msg} (${code})` : msg)
     } finally {
       setUploading(false)
     }
