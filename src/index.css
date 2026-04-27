@@ -481,10 +481,11 @@ html, body {
 .kindle-content {
   max-width: 680px;
   margin: 0 auto;
-  padding: 72px 24px 80px;
+  padding: 72px 24px calc(96px + env(safe-area-inset-bottom));
   font-family: Georgia, 'Palatino Linotype', Palatino, 'Book Antiqua', serif;
   line-height: 1.8;
   color: var(--text);
+  font-variant-ligatures: none;
 }
 @media (min-width: 760px) {
   .kindle-content { padding-left: 40px; padding-right: 40px; }
@@ -511,7 +512,7 @@ html, body {
 /* Font size pill — bottom center, always visible */
 .kindle-font-bar {
   position: absolute;
-  bottom: 12px;
+  bottom: calc(12px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   z-index: 40;
