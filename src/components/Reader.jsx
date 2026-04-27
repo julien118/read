@@ -25,8 +25,9 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   const wrapperRef   = useRef()
   const textLayerRef = useRef(null)
   const pdfRef       = useRef(null)
-  const renderTaskRef     = useRef(null)
-  const textLayerTaskRef  = useRef(null)
+  const renderTaskRef       = useRef(null)
+  const textLayerTaskRef    = useRef(null)
+  const progressTimerRef    = useRef(null)
   const zoomRef      = useRef(1)
   const transformRef = useRef({ panX: 0, panY: 0, cssScale: 1 })
   const currentPageRef = useRef(1)
@@ -162,7 +163,9 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     renderTaskRef.current = task
     try {
       await task.promise
-      saveProgress(bookId, pageNum)
+      // Debounce progress saves — Supabase network call, 2 s delay
+      clearTimeout(progressTimerRef.current)
+      progressTimerRef.current = setTimeout(() => saveProgress(bookId, pageNum), 2000)
     } catch (e) {
       if (e?.name !== 'RenderingCancelledException') console.error(e)
     }
@@ -456,6 +459,7 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
         <WordPopup
           word={popup.word}
           sentence={popup.sentence}
+          bookId={bookId}
           onClose={() => setPopup(null)}
         />
       )}

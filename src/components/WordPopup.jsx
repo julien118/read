@@ -5,7 +5,7 @@ import { saveWord } from '../db'
 const LEVEL_COLOR = { easy: '#22c55e', medium: '#f59e0b', hard: '#ef4444' }
 const LEVEL_LABEL = { easy: 'facile', medium: 'moyen', hard: 'difficile' }
 
-export default function WordPopup({ word, sentence, onClose }) {
+export default function WordPopup({ word, sentence, bookId, onClose }) {
   const [phase, setPhase] = useState('loading') // loading | result | error | no_key | translating | translated
   const [data, setData] = useState(null)
   const [translation, setTranslation] = useState(null)
@@ -58,7 +58,7 @@ export default function WordPopup({ word, sentence, onClose }) {
 
   async function handleSaveWord() {
     if (!data) return
-    await saveWord({ word, definition_fr: data.definition_fr, example_en: data.example_en, level: data.level })
+    await saveWord({ word, definition_fr: data.definition_fr, example_en: data.example_en, level: data.level, bookId })
     setSaved(true)
   }
 
