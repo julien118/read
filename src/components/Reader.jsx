@@ -66,6 +66,7 @@ function textItemsToParagraphs(items) {
 
 export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
   const [status, setStatus]           = useState('loading') // loading|extracting|ready|error
+  const [errorMsg, setErrorMsg]       = useState('')
   const [extractProgress, setExtractProgress] = useState(0)
   const [content, setContent]         = useState([]) // { type:'text', data:string[] } | { type:'image', data:string }
   const [bookTitle, setBookTitle]     = useState('')
@@ -157,7 +158,10 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
         }
       } catch (e) {
         console.error('Reader load error:', e)
-        if (!cancelled) setStatus('error')
+        if (!cancelled) {
+          setErrorMsg(e?.message ?? e?.error_description ?? String(e))
+          setStatus('error')
+        }
       }
     }
     load()
@@ -342,8 +346,9 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
     return (
       <div className="kindle-reader">
         <div className="kindle-loading">
-          <p style={{ color: 'var(--text-sub)', padding: '0 24px', textAlign: 'center' }}>
+          <p style={{ color: 'var(--text-sub)', padding: '0 24px', textAlign: 'center', maxWidth: 340, fontSize: 14, lineHeight: 1.5 }}>
             Impossible de charger ce livre.
+            {errorMsg ? <><br /><span style={{ fontSize: 12, opacity: 0.7 }}>{errorMsg}</span></> : null}
           </p>
           <button className="popup-retry" style={{ marginTop: 16 }} onClick={onClose}>Retour</button>
         </div>
