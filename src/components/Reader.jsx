@@ -104,7 +104,7 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
       try {
         const { data: book } = await supabase
           .from('books')
-          .select('title, current_page, total_pages, cover_image')
+          .select('title, current_page, total_pages, cover_image, storage_path')
           .eq('id', bookId)
           .single()
         if (cancelled) return
@@ -114,7 +114,7 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
         const totalPages = book?.total_pages  ?? 1
         savedScrollRef.current = totalPages > 1 ? ((savedPage - 1) / (totalPages - 1)) * 100 : 0
 
-        const buffer = await getPDF(bookId, pct => {
+        const buffer = await getPDF(book, pct => {
           if (!cancelled) setDownloadProgress(pct)
         })
         if (cancelled) return

@@ -55,45 +55,26 @@ export async function addBook(id, metadata, pdfBuffer) {
   if (insertError) throw insertError
 }
 
-export async function getPDF(bookId, onProgress = null) {
-  const { data: book, error: bookError } = await supabase
+export async function getPDF(book, onProgress) {
+  const { data } = supabase.storage
     .from('books')
-    .select('storage_path')
-    .eq('id', bookId)
-    .single()
-  if (bookError) throw bookError
+    .getPublicUrl(book.storage_path)
 
-  const { data: urlData } = supabase.storage.from('books').getPublicUrl(book.storage_path)
-  const response = await fetch(urlData.publicUrl)
-  if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`)
+  if (onProgress) onProgress(10)
 
-  const contentLength = +response.headers.get('content-length')
-  const canStream = onProgress && contentLength &&
-    response.body != null && typeof response.body.getReader === 'function'
+  const response = await fetch(data.publicUrl)
 
-  if (!canStream) {
-    return response.arrayBuffer()
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`)
   }
 
-  // Stream with progress — reader.read() loop (Safari-compatible, no for-await-of)
-  const reader = response.body.getReader()
-  const chunks = []
-  let received = 0
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    chunks.push(value)
-    received += value.length
-    onProgress(Math.round((received / contentLength) * 100))
-  }
+  if (onProgress) onProgress(50)
 
-  // Concatenate chunks into a single ArrayBuffer
-  const total = chunks.reduce((s, c) => s + c.length, 0)
-  const buf = new Uint8Array(total)
-  let offset = 0
-  let i = 0
-  while (i < chunks.length) { buf.set(chunks[i], offset); offset += chunks[i].length; i++ }
-  return buf.buffer
+  const arrayBuffer = await response.arrayBuffer()
+
+  if (onProgress) onProgress(90)
+
+  return arrayBuffer
 }
 
 export async function deleteBook(bookId) {
