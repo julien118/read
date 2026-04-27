@@ -473,12 +473,6 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
         </button>
       </div>
 
-      <button className="reader-back-btn" onClick={handleBack} aria-label="Retour">
-        <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round">
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-      </button>
-
       <div
         className="kindle-scroll"
         onTouchStart={onTouchStart}
@@ -495,6 +489,8 @@ export default function Reader({ bookId, onClose, theme, onToggleTheme }) {
       </div>
 
       <div className="kindle-font-bar">
+        <button className="kindle-font-btn" onClick={handleBack} aria-label="Retour">‹</button>
+        <span className="kindle-font-sep" />
         <button className="kindle-font-btn" onClick={() => changeFontSize(-1)} disabled={fontSize <= FONT_SIZES[0]} aria-label="Diminuer">A−</button>
         <span className="kindle-font-cur">{fontSize}</span>
         <button className="kindle-font-btn" onClick={() => changeFontSize(+1)} disabled={fontSize >= FONT_SIZES[FONT_SIZES.length - 1]} aria-label="Augmenter">A+</button>
