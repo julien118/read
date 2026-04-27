@@ -51,9 +51,9 @@ export default function Library({ onOpenBook, theme, onToggleTheme }) {
         setBooks(await getAllBooks())
       }
     } catch (e) {
-      console.error('Upload failed:', e)
-      const msg = e?.message ?? String(e)
-      const code = e?.error ?? e?.statusCode ?? ''
+      console.error('Upload failed (full error):', JSON.stringify(e, null, 2), e)
+      const msg = e?.message ?? e?.error_description ?? String(e)
+      const code = e?.statusCode ?? e?.status ?? e?.error ?? ''
       setUploadError(code ? `${msg} (${code})` : msg)
     } finally {
       setUploading(false)

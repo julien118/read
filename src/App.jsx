@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import Library from './components/Library'
 import Reader from './components/Reader'
 import Vocabulary from './components/Vocabulary'
+import { supabase } from './lib/supabase'
 
 const THEMES = ['white', 'dark', 'night']
 const THEME_META = { white: '#ffffff', dark: '#111111', night: '#1a0f00' }
@@ -10,6 +11,12 @@ export default function App() {
   const [view, setView] = useState('library') // library | reader | vocabulary
   const [currentBookId, setCurrentBookId] = useState(null)
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'white')
+
+  useEffect(() => {
+    supabase.from('books').select('count').then(({ data, error }) => {
+      console.log('[Supabase] connection test:', { data, error })
+    })
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('theme', theme)
