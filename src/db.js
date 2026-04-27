@@ -3,14 +3,15 @@ import { supabase } from './lib/supabase'
 // Normalize Supabase row → shape expected by existing components
 function normalizeBook(row) {
   return {
-    id:          row.id,
-    title:       row.title,
-    fileName:    row.filename,
-    pageCount:   row.total_pages  ?? 0,
-    cover:       row.cover_image  ?? null,
-    currentPage: row.current_page ?? 1,
-    storagePath: row.storage_path,
-    addedAt:     new Date(row.created_at).getTime(),
+    id:            row.id,
+    title:         row.title,
+    fileName:      row.filename,
+    pageCount:     row.total_pages   ?? 0,
+    cover:         row.cover_image   ?? null,
+    currentPage:   row.current_page  ?? 1,
+    scrollPercent: row.scroll_percent ?? 0,
+    storagePath:   row.storage_path,
+    addedAt:       new Date(row.created_at).getTime(),
   }
 }
 
@@ -93,11 +94,10 @@ export async function deleteBook(bookId) {
   }
 }
 
-export async function saveProgress(bookId, page) {
-  await supabase
-    .from('books')
-    .update({ current_page: page, updated_at: new Date().toISOString() })
-    .eq('id', bookId)
+export async function saveProgress(bookId, page, scrollPercent = null) {
+  const patch = { current_page: page, last_read: new Date().toISOString() }
+  if (scrollPercent !== null) patch.scroll_percent = scrollPercent
+  await supabase.from('books').update(patch).eq('id', bookId)
 }
 
 export async function getProgress(bookId) {

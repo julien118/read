@@ -207,6 +207,18 @@ html, body {
   margin-top: 3px;
 }
 
+.book-progress-bar {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 4px;
+  background: rgba(0,0,0,0.18);
+}
+.book-progress-fill {
+  height: 100%;
+  background: #C4974A;
+  border-radius: 0 2px 0 0;
+}
+
 .book-card-skeleton {
   aspect-ratio: 2 / 3;
   border-radius: 10px;

@@ -58,6 +58,11 @@ export default function BookCard({ book, onOpen, onDeleted, onUpdated }) {
           ? <img src={book.cover} alt="" draggable={false} />
           : <div className="book-cover-placeholder"><span>{initial}</span></div>
         }
+        {book.scrollPercent > 0 && (
+          <div className="book-progress-bar">
+            <div className="book-progress-fill" style={{ width: `${Math.min(100, book.scrollPercent)}%` }} />
+          </div>
+        )}
         {deleteMode && (
           <div className="delete-overlay">
             <button className="delete-btn" onClick={handleDelete}>
